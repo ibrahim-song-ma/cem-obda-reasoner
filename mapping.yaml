@@ -5,46 +5,47 @@ prefixes:
 
 sources:
   customer_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM customer
   customerbehavior_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM customerbehavior
   event_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM event
   workorder_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM workorder
   employee_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM employee
   perception_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM perception
   remediationstrategy_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM remediationstrategy
   customer_event_link_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM customer_event_link
   event_workorder_link_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM event_workorder_link
   perception_remediation_link_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM perception_remediationstrategy_link
   event_perception_link_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM event_perception_link
   broadbandnetwork_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM broadbandnetwork
   wirelessnetwork_source:
-    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    access: DataSource1
     query: SELECT * FROM wirelessnetwork
 
 mappings:
+  # ========== Customer ==========
   customer_mapping:
     sources:
       - customer_source
@@ -59,6 +60,7 @@ mappings:
       - [http://ywyinfo.com/example-owl#customer_教育水平, $(education_level)]
       - [http://ywyinfo.com/example-owl#customer_偏好套餐类型, $(preferred_product_type)]
 
+  # ========== CustomerBehavior ==========
   customerbehavior_mapping:
     sources:
       - customerbehavior_source
@@ -82,13 +84,20 @@ mappings:
       - [http://ywyinfo.com/example-owl#customerbehavior_本月投诉次数, $(current_complaint_times), xsd:integer]
       - p: http://ywyinfo.com/example-owl#hasCustomer
         o:
-          mapping: customer_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(customer_id)]
-              - [str2, $(customer_id)]
+          value: http://ywyinfo.com/example-owl#customer_$(customer_id)
+          type: iri
 
+  customer_has_behavior_mapping:
+    sources:
+      - customerbehavior_source
+    s: http://ywyinfo.com/example-owl#customer_$(customer_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasBehavior
+        o:
+          value: http://ywyinfo.com/example-owl#customerbehavior_$(behavior_id)
+          type: iri
+
+  # ========== Event ==========
   event_mapping:
     sources:
       - event_source
@@ -100,7 +109,12 @@ mappings:
       - [http://ywyinfo.com/example-owl#event_事件描述, $(description)]
       - [http://ywyinfo.com/example-owl#event_事件状态, $(status)]
       - [http://ywyinfo.com/example-owl#event_发生时间, $(occur_time)]
+      - p: http://ywyinfo.com/example-owl#hasEmployee
+        o:
+          value: http://ywyinfo.com/example-owl#employee_$(employee_id)
+          type: iri
 
+  # ========== WorkOrder ==========
   workorder_mapping:
     sources:
       - workorder_source
@@ -115,7 +129,12 @@ mappings:
       - [http://ywyinfo.com/example-owl#workorder_关闭时间, $(close_time)]
       - [http://ywyinfo.com/example-owl#workorder_感知维度, $(ganzhiweidu)]
       - [http://ywyinfo.com/example-owl#workorder_初始建议, $(init_advice)]
+      - p: http://ywyinfo.com/example-owl#hasCustomer
+        o:
+          value: http://ywyinfo.com/example-owl#customer_$(customer_id)
+          type: iri
 
+  # ========== Employee ==========
   employee_mapping:
     sources:
       - employee_source
@@ -128,6 +147,7 @@ mappings:
       - [http://ywyinfo.com/example-owl#employee_所属部门, $(department)]
       - [http://ywyinfo.com/example-owl#employee_负责服务类型, $(service_type_responsible)]
 
+  # ========== Perception ==========
   perception_mapping:
     sources:
       - perception_source
@@ -140,6 +160,7 @@ mappings:
       - [http://ywyinfo.com/example-owl#perception_感知时间, $(perception_time)]
       - [http://ywyinfo.com/example-owl#perception_感知维度, $(weidu)]
 
+  # ========== RemediationStrategy ==========
   remediationstrategy_mapping:
     sources:
       - remediationstrategy_source
@@ -150,6 +171,7 @@ mappings:
       - [http://ywyinfo.com/example-owl#remediationstrategy_修复策略名称, $(strategy_name)]
       - [http://ywyinfo.com/example-owl#remediationstrategy_修复策略说明, $(strategy_description)]
 
+  # ========== BroadbandNetwork ==========
   broadbandnetwork_mapping:
     sources:
       - broadbandnetwork_source
@@ -163,6 +185,7 @@ mappings:
       - [http://ywyinfo.com/example-owl#broadbandnetwork_网络带宽, $(Bandwidth), xsd:float]
       - [http://ywyinfo.com/example-owl#broadbandnetwork_接入设备数量, $(access_device_count), xsd:integer]
 
+  # ========== WirelessNetwork ==========
   wirelessnetwork_mapping:
     sources:
       - wirelessnetwork_source
@@ -176,28 +199,43 @@ mappings:
       - [http://ywyinfo.com/example-owl#wirelessnetwork_运行状态, $(operational_status)]
       - [http://ywyinfo.com/example-owl#wirelessnetwork_接入设备数量, $(access_device_count), xsd:integer]
 
+  # ========== 链接表映射 ==========
   customer_event_mapping:
     sources:
       - customer_event_link_source
     s: http://ywyinfo.com/example-owl#customer_event_$(id)
     po:
       - [a, http://ywyinfo.com/example-owl#customer_event_yf]
+      - [http://ywyinfo.com/example-owl#link_客户ID, $(customer_id)]
+      - [http://ywyinfo.com/example-owl#link_事件ID, $(event_id)]
       - p: http://ywyinfo.com/example-owl#hasCustomer
         o:
-          mapping: customer_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(customer_id)]
-              - [str2, $(customer_id)]
+          value: http://ywyinfo.com/example-owl#customer_$(customer_id)
+          type: iri
       - p: http://ywyinfo.com/example-owl#hasEvent
         o:
-          mapping: event_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(event_id)]
-              - [str2, $(event_id)]
+          value: http://ywyinfo.com/example-owl#event_$(event_id)
+          type: iri
+
+  customer_has_event_mapping:
+    sources:
+      - customer_event_link_source
+    s: http://ywyinfo.com/example-owl#customer_$(customer_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasEvent
+        o:
+          value: http://ywyinfo.com/example-owl#event_$(event_id)
+          type: iri
+
+  event_has_customer_mapping:
+    sources:
+      - customer_event_link_source
+    s: http://ywyinfo.com/example-owl#event_$(event_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasCustomer
+        o:
+          value: http://ywyinfo.com/example-owl#customer_$(customer_id)
+          type: iri
 
   event_workorder_mapping:
     sources:
@@ -205,45 +243,73 @@ mappings:
     s: http://ywyinfo.com/example-owl#event_workorder_$(id)
     po:
       - [a, http://ywyinfo.com/example-owl#event_workorder_GS]
+      - [http://ywyinfo.com/example-owl#link_事件ID, $(event_id)]
+      - [http://ywyinfo.com/example-owl#link_工单ID, $(work_order_id)]
       - p: http://ywyinfo.com/example-owl#hasEvent
         o:
-          mapping: event_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(event_id)]
-              - [str2, $(event_id)]
+          value: http://ywyinfo.com/example-owl#event_$(event_id)
+          type: iri
       - p: http://ywyinfo.com/example-owl#hasWorkOrder
         o:
-          mapping: workorder_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(work_order_id)]
-              - [str2, $(work_order_id)]
+          value: http://ywyinfo.com/example-owl#workorder_$(work_order_id)
+          type: iri
+
+  event_has_workorder_mapping:
+    sources:
+      - event_workorder_link_source
+    s: http://ywyinfo.com/example-owl#event_$(event_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasWorkOrder
+        o:
+          value: http://ywyinfo.com/example-owl#workorder_$(work_order_id)
+          type: iri
+
+  workorder_has_event_mapping:
+    sources:
+      - event_workorder_link_source
+    s: http://ywyinfo.com/example-owl#workorder_$(work_order_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasEvent
+        o:
+          value: http://ywyinfo.com/example-owl#event_$(event_id)
+          type: iri
 
   perception_remediation_mapping:
     sources:
       - perception_remediation_link_source
     s: http://ywyinfo.com/example-owl#perception_remediation_$(id)
     po:
-      - [a, http://ywyinfo.com/example-owl#perception_remediationstrategy_link]
+      - [a, http://ywyinfo.com/example-owl#perception_remediation_link]
+      - [http://ywyinfo.com/example-owl#link_感知ID, $(perception_id)]
+      - [http://ywyinfo.com/example-owl#link_策略ID, $(strategy_id)]
       - p: http://ywyinfo.com/example-owl#hasPerception
         o:
-          mapping: perception_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(perception_id)]
-              - [str2, $(perception_id)]
+          value: http://ywyinfo.com/example-owl#perception_$(perception_id)
+          type: iri
       - p: http://ywyinfo.com/example-owl#hasRemediationStrategy
         o:
-          mapping: remediationstrategy_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(strategy_id)]
-              - [str2, $(strategy_id)]
+          value: http://ywyinfo.com/example-owl#remediationstrategy_$(strategy_id)
+          type: iri
+
+  perception_suggests_strategy_mapping:
+    sources:
+      - perception_remediation_link_source
+    s: http://ywyinfo.com/example-owl#perception_$(perception_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#suggestsStrategy
+        o:
+          value: http://ywyinfo.com/example-owl#remediationstrategy_$(strategy_id)
+          type: iri
+
+  remediationstrategy_has_perception_mapping:
+    sources:
+      - perception_remediation_link_source
+    s: http://ywyinfo.com/example-owl#remediationstrategy_$(strategy_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasPerception
+        o:
+          value: http://ywyinfo.com/example-owl#perception_$(perception_id)
+          type: iri
 
   event_perception_mapping:
     sources:
@@ -251,19 +317,33 @@ mappings:
     s: http://ywyinfo.com/example-owl#event_perception_$(id)
     po:
       - [a, http://ywyinfo.com/example-owl#event_perception_link]
+      - [http://ywyinfo.com/example-owl#link_事件ID, $(event_id)]
+      - [http://ywyinfo.com/example-owl#link_感知ID, $(perception_id)]
       - p: http://ywyinfo.com/example-owl#hasEvent
         o:
-          mapping: event_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(event_id)]
-              - [str2, $(event_id)]
+          value: http://ywyinfo.com/example-owl#event_$(event_id)
+          type: iri
       - p: http://ywyinfo.com/example-owl#hasPerception
         o:
-          mapping: perception_mapping
-          condition:
-            function: equal
-            parameters:
-              - [str1, $(perception_id)]
-              - [str2, $(perception_id)]
+          value: http://ywyinfo.com/example-owl#perception_$(perception_id)
+          type: iri
+
+  event_has_perception_mapping:
+    sources:
+      - event_perception_link_source
+    s: http://ywyinfo.com/example-owl#event_$(event_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasPerception
+        o:
+          value: http://ywyinfo.com/example-owl#perception_$(perception_id)
+          type: iri
+
+  perception_has_event_mapping:
+    sources:
+      - event_perception_link_source
+    s: http://ywyinfo.com/example-owl#perception_$(perception_id)
+    po:
+      - p: http://ywyinfo.com/example-owl#hasEvent
+        o:
+          value: http://ywyinfo.com/example-owl#event_$(event_id)
+          type: iri
