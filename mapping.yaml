@@ -1,0 +1,269 @@
+prefixes:
+  ex: http://ywyinfo.com/example-owl#
+  xsd: http://www.w3.org/2001/XMLSchema#
+  rdfs: http://www.w3.org/2000/01/rdf-schema#
+
+sources:
+  customer_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM customer
+  customerbehavior_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM customerbehavior
+  event_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM event
+  workorder_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM workorder
+  employee_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM employee
+  perception_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM perception
+  remediationstrategy_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM remediationstrategy
+  customer_event_link_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM customer_event_link
+  event_workorder_link_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM event_workorder_link
+  perception_remediation_link_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM perception_remediationstrategy_link
+  event_perception_link_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM event_perception_link
+  broadbandnetwork_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM broadbandnetwork
+  wirelessnetwork_source:
+    access: /Users/Song/code/cc/reasoner/cem_data.duckdb
+    query: SELECT * FROM wirelessnetwork
+
+mappings:
+  customer_mapping:
+    sources:
+      - customer_source
+    s: http://ywyinfo.com/example-owl#customer_$(customer_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#customer]
+      - [http://ywyinfo.com/example-owl#customer_客户ID, $(customer_id)]
+      - [http://ywyinfo.com/example-owl#customer_姓名, $(name)]
+      - [http://ywyinfo.com/example-owl#customer_年龄, $(age), xsd:integer]
+      - [http://ywyinfo.com/example-owl#customer_收入水平, $(income_level)]
+      - [http://ywyinfo.com/example-owl#customer_地域分布, $(region)]
+      - [http://ywyinfo.com/example-owl#customer_教育水平, $(education_level)]
+      - [http://ywyinfo.com/example-owl#customer_偏好套餐类型, $(preferred_product_type)]
+
+  customerbehavior_mapping:
+    sources:
+      - customerbehavior_source
+    s: http://ywyinfo.com/example-owl#customerbehavior_$(behavior_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#customerbehavior]
+      - [http://ywyinfo.com/example-owl#customerbehavior_客户行为ID, $(behavior_id)]
+      - [http://ywyinfo.com/example-owl#customerbehavior_客户ID, $(customer_id)]
+      - [http://ywyinfo.com/example-owl#customerbehavior_手机号, $(iphone)]
+      - [http://ywyinfo.com/example-owl#customerbehavior_月均账单金额, $(avg_bill), xsd:decimal]
+      - [http://ywyinfo.com/example-owl#customerbehavior_月均流量使用, $(avg_traffic), xsd:decimal]
+      - [http://ywyinfo.com/example-owl#customerbehavior_满意度评分, $(satisfaction_score), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_网络体验评分, $(network_experience_score), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_服务体验评分, $(service_experience_score), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_资费感知评分, $(cost_perception_score), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_近3个月投诉次数, $(complain_3m), xsd:integer]
+      - [http://ywyinfo.com/example-owl#customerbehavior_网页显示成功率, $(web_disp_rate), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_视频播放成功率, $(video_play_succ_rate), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_RSRP优良率, $(rsrp_good_ratio), xsd:float]
+      - [http://ywyinfo.com/example-owl#customerbehavior_是否5G套餐, $(is_5g_pack), xsd:boolean]
+      - [http://ywyinfo.com/example-owl#customerbehavior_本月投诉次数, $(current_complaint_times), xsd:integer]
+      - p: http://ywyinfo.com/example-owl#hasCustomer
+        o:
+          mapping: customer_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(customer_id)]
+              - [str2, $(customer_id)]
+
+  event_mapping:
+    sources:
+      - event_source
+    s: http://ywyinfo.com/example-owl#event_$(event_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#event]
+      - [http://ywyinfo.com/example-owl#event_event_id, $(event_id)]
+      - [http://ywyinfo.com/example-owl#event_事件类型, $(event_type)]
+      - [http://ywyinfo.com/example-owl#event_事件描述, $(description)]
+      - [http://ywyinfo.com/example-owl#event_事件状态, $(status)]
+      - [http://ywyinfo.com/example-owl#event_发生时间, $(occur_time)]
+
+  workorder_mapping:
+    sources:
+      - workorder_source
+    s: http://ywyinfo.com/example-owl#workorder_$(work_order_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#workorder]
+      - [http://ywyinfo.com/example-owl#workorder_工单ID, $(work_order_id)]
+      - [http://ywyinfo.com/example-owl#workorder_工单内容, $(content)]
+      - [http://ywyinfo.com/example-owl#workorder_工单状态, $(status)]
+      - [http://ywyinfo.com/example-owl#workorder_工单优先级, $(priority)]
+      - [http://ywyinfo.com/example-owl#workorder_创建时间, $(create_time)]
+      - [http://ywyinfo.com/example-owl#workorder_关闭时间, $(close_time)]
+      - [http://ywyinfo.com/example-owl#workorder_感知维度, $(ganzhiweidu)]
+      - [http://ywyinfo.com/example-owl#workorder_初始建议, $(init_advice)]
+
+  employee_mapping:
+    sources:
+      - employee_source
+    s: http://ywyinfo.com/example-owl#employee_$(employee_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#employee]
+      - [http://ywyinfo.com/example-owl#employee_员工ID, $(employee_id)]
+      - [http://ywyinfo.com/example-owl#employee_姓名, $(name)]
+      - [http://ywyinfo.com/example-owl#employee_职位, $(position)]
+      - [http://ywyinfo.com/example-owl#employee_所属部门, $(department)]
+      - [http://ywyinfo.com/example-owl#employee_负责服务类型, $(service_type_responsible)]
+
+  perception_mapping:
+    sources:
+      - perception_source
+    s: http://ywyinfo.com/example-owl#perception_$(perception_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#perception]
+      - [http://ywyinfo.com/example-owl#perception_感知ID, $(perception_id)]
+      - [http://ywyinfo.com/example-owl#perception_感知分析算法, $(algorithm)]
+      - [http://ywyinfo.com/example-owl#perception_感知分析算法原理描述, $(dimension)]
+      - [http://ywyinfo.com/example-owl#perception_感知时间, $(perception_time)]
+      - [http://ywyinfo.com/example-owl#perception_感知维度, $(weidu)]
+
+  remediationstrategy_mapping:
+    sources:
+      - remediationstrategy_source
+    s: http://ywyinfo.com/example-owl#remediationstrategy_$(strategy_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#remediationstrategy]
+      - [http://ywyinfo.com/example-owl#remediationstrategy_修复策略ID, $(strategy_id)]
+      - [http://ywyinfo.com/example-owl#remediationstrategy_修复策略名称, $(strategy_name)]
+      - [http://ywyinfo.com/example-owl#remediationstrategy_修复策略说明, $(strategy_description)]
+
+  broadbandnetwork_mapping:
+    sources:
+      - broadbandnetwork_source
+    s: http://ywyinfo.com/example-owl#broadbandnetwork_$(network_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#broadbandnetwork]
+      - [http://ywyinfo.com/example-owl#broadbandnetwork_网络ID, $(network_id)]
+      - [http://ywyinfo.com/example-owl#broadbandnetwork_光纤长度单位为公里, $(fiber_length), xsd:decimal]
+      - [http://ywyinfo.com/example-owl#broadbandnetwork_运行状态, $(operational_status)]
+      - [http://ywyinfo.com/example-owl#broadbandnetwork_依赖设备, $(dependent_device)]
+      - [http://ywyinfo.com/example-owl#broadbandnetwork_网络带宽, $(Bandwidth), xsd:float]
+      - [http://ywyinfo.com/example-owl#broadbandnetwork_接入设备数量, $(access_device_count), xsd:integer]
+
+  wirelessnetwork_mapping:
+    sources:
+      - wirelessnetwork_source
+    s: http://ywyinfo.com/example-owl#wirelessnetwork_$(network_id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#wirelessnetwork]
+      - [http://ywyinfo.com/example-owl#wirelessnetwork_网络ID, $(network_id)]
+      - [http://ywyinfo.com/example-owl#wirelessnetwork_基站类型, $(base_station_type)]
+      - [http://ywyinfo.com/example-owl#wirelessnetwork_工作频段, $(work_band)]
+      - [http://ywyinfo.com/example-owl#wirelessnetwork_RSRP信号强度, $(RSSI), xsd:float]
+      - [http://ywyinfo.com/example-owl#wirelessnetwork_运行状态, $(operational_status)]
+      - [http://ywyinfo.com/example-owl#wirelessnetwork_接入设备数量, $(access_device_count), xsd:integer]
+
+  customer_event_mapping:
+    sources:
+      - customer_event_link_source
+    s: http://ywyinfo.com/example-owl#customer_event_$(id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#customer_event_yf]
+      - p: http://ywyinfo.com/example-owl#hasCustomer
+        o:
+          mapping: customer_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(customer_id)]
+              - [str2, $(customer_id)]
+      - p: http://ywyinfo.com/example-owl#hasEvent
+        o:
+          mapping: event_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(event_id)]
+              - [str2, $(event_id)]
+
+  event_workorder_mapping:
+    sources:
+      - event_workorder_link_source
+    s: http://ywyinfo.com/example-owl#event_workorder_$(id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#event_workorder_GS]
+      - p: http://ywyinfo.com/example-owl#hasEvent
+        o:
+          mapping: event_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(event_id)]
+              - [str2, $(event_id)]
+      - p: http://ywyinfo.com/example-owl#hasWorkOrder
+        o:
+          mapping: workorder_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(work_order_id)]
+              - [str2, $(work_order_id)]
+
+  perception_remediation_mapping:
+    sources:
+      - perception_remediation_link_source
+    s: http://ywyinfo.com/example-owl#perception_remediation_$(id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#perception_remediationstrategy_link]
+      - p: http://ywyinfo.com/example-owl#hasPerception
+        o:
+          mapping: perception_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(perception_id)]
+              - [str2, $(perception_id)]
+      - p: http://ywyinfo.com/example-owl#hasRemediationStrategy
+        o:
+          mapping: remediationstrategy_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(strategy_id)]
+              - [str2, $(strategy_id)]
+
+  event_perception_mapping:
+    sources:
+      - event_perception_link_source
+    s: http://ywyinfo.com/example-owl#event_perception_$(id)
+    po:
+      - [a, http://ywyinfo.com/example-owl#event_perception_link]
+      - p: http://ywyinfo.com/example-owl#hasEvent
+        o:
+          mapping: event_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(event_id)]
+              - [str2, $(event_id)]
+      - p: http://ywyinfo.com/example-owl#hasPerception
+        o:
+          mapping: perception_mapping
+          condition:
+            function: equal
+            parameters:
+              - [str1, $(perception_id)]
+              - [str2, $(perception_id)]

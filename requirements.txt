@@ -1,0 +1,7 @@
+duckdb>=0.10.0
+rdflib>=7.0.0
+owlrl>=6.0.2
+python-dotenv>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
