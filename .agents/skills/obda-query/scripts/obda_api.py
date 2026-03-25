@@ -308,17 +308,24 @@ def normalize_run_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     if template_config["requires_sparql"] and "sparql" not in normalized:
         raise SystemExit(f"Run template '{template}' requires a sparql section")
     if template_config["requires_analysis"] and "analysis" not in normalized:
-        raise SystemExit(f"Run template '{template}' requires an analysis section")
+        default_kind = template_config["default_analysis_kind"]
+        if not default_kind:
+            raise SystemExit(f"Run template '{template}' requires an analysis section")
+        normalized["analysis"] = {
+            "kind": default_kind,
+            "payload": {},
+        }
 
     analysis_spec = normalized.get("analysis")
     if analysis_spec is not None:
         analysis_spec = dict(analysis_spec)
         if not analysis_spec.get("kind") and template_config["default_analysis_kind"]:
             analysis_spec["kind"] = template_config["default_analysis_kind"]
+        if template == "causal_enumeration":
+            analysis_spec["kind"] = "paths-batch"
+        elif template == "causal_lookup":
+            analysis_spec["kind"] = "paths"
         normalized["analysis"] = analysis_spec
-
-    if template_config["auto_include_profiles"] and "include_profiles" not in normalized:
-        normalized["include_profiles"] = True
 
     if template == "schema_inspect" and not any(key in normalized for key in ("samples", "sparql", "analysis")):
         normalized["samples"] = []
@@ -372,6 +379,69 @@ def derive_uri_sources_from_sparql(
             return {"values": values if multiple else values[:1], "source_var": chosen_var}
 
     return {"values": [], "source_var": None}
+
+
+def summarize_schema(schema: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a compact summary of /schema output for run responses."""
+    if not isinstance(schema, dict):
+        return None
+
+    classes = schema.get("classes")
+    data_properties = schema.get("data_properties")
+    object_properties = schema.get("object_properties")
+    class_hierarchy = schema.get("class_hierarchy")
+
+    class_names = []
+    if isinstance(classes, list):
+        class_names = [
+            item.get("local_name")
+            for item in classes
+            if isinstance(item, dict) and item.get("local_name")
+        ]
+
+    return {
+        "class_count": len(classes) if isinstance(classes, list) else 0,
+        "data_property_count": len(data_properties) if isinstance(data_properties, list) else 0,
+        "object_property_count": len(object_properties) if isinstance(object_properties, list) else 0,
+        "class_hierarchy_count": len(class_hierarchy) if isinstance(class_hierarchy, dict) else 0,
+        "class_names_sample": class_names[:12],
+        "truncated": len(class_names) > 12,
+    }
+
+
+def summarize_profiles(profiles: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a compact summary of /analysis/profiles output for run responses."""
+    if not isinstance(profiles, dict):
+        return None
+
+    items = profiles.get("profiles")
+    if not isinstance(items, list):
+        return None
+
+    names = [
+        item.get("name")
+        for item in items
+        if isinstance(item, dict) and item.get("name")
+    ]
+    return {
+        "profile_count": len(items),
+        "profile_names": names,
+    }
+
+
+def sparql_row_count(sparql_response: Optional[Dict[str, Any]]) -> int:
+    """Return the row count from a SPARQL response when available."""
+    if not isinstance(sparql_response, dict):
+        return 0
+
+    count = sparql_response.get("count")
+    if isinstance(count, int):
+        return count
+
+    rows = sparql_response.get("results")
+    if isinstance(rows, list):
+        return len(rows)
+    return 0
 
 
 def build_question_mode_run_response(
@@ -459,10 +529,12 @@ def build_question_mode_run_response(
             "Do not hand-write GET /analysis/paths query strings; use analysis-paths --json or analysis-paths-batch --json.",
             "Use schema to verify domains before writing SPARQL.",
         ],
-        "schema": schema,
+        "schema_summary": summarize_schema(schema),
+        "schema_included": False,
     }
     if profiles is not None:
-        response["profiles"] = profiles
+        response["profiles_summary"] = summarize_profiles(profiles)
+        response["profiles_included"] = False
     return response
 
 
@@ -481,7 +553,7 @@ def execute_run_plan(
         write_schema_state(state_file, base_url)
 
         analysis_spec = plan.get("analysis")
-        include_profiles = bool(plan.get("include_profiles")) or analysis_spec is not None
+        include_profiles = bool(plan.get("include_profiles"))
         profiles = request_fn("GET", f"{base_url}/analysis/profiles") if include_profiles else None
 
         samples = []
@@ -513,9 +585,18 @@ def execute_run_plan(
 
         analysis_response = None
         analysis_meta = None
+        analysis_error = None
+        analysis_skipped = None
         if analysis_spec is not None:
             kind = analysis_spec.get("kind", "paths")
-            if kind == "causal":
+            row_count = sparql_row_count(sparql_response)
+
+            if plan["template"] in ("causal_lookup", "causal_enumeration") and sparql_spec is not None and row_count == 0:
+                analysis_skipped = {
+                    "reason": "sparql_no_results",
+                    "message": "Main SPARQL returned no rows, so analyzer was not executed.",
+                }
+            elif kind == "causal":
                 customer_id = analysis_spec.get("customer_id")
                 if not customer_id:
                     raise SystemExit("analysis kind 'causal' requires customer_id")
@@ -558,29 +639,76 @@ def execute_run_plan(
                             "auto_derived_source_count": 1,
                         }
 
-                if kind in ("paths", "paths-batch") and "mode" not in payload:
-                    payload["mode"] = "paths"
-                endpoint_map = {
-                    "paths": "/analysis/paths",
-                    "paths-batch": "/analysis/paths/batch",
-                    "neighborhood": "/analysis/neighborhood",
-                    "inferred-relations": "/analysis/inferred-relations",
-                    "explain": "/analysis/explain",
-                }
-                endpoint = endpoint_map.get(kind)
-                if endpoint is None:
-                    raise SystemExit(f"Unsupported analysis kind: {kind}")
-                analysis_response = request_fn("POST", f"{base_url}{endpoint}", payload)
+                if kind == "paths-batch" and not payload.get("sources"):
+                    analysis_error = {
+                        "kind": "missing_sources",
+                        "message": (
+                            "paths-batch analysis requires analysis.payload.sources, "
+                            "or a SPARQL result column containing URI anchors that the client can auto-derive."
+                        ),
+                        "hint": (
+                            "Return at least one entity URI column from the main SPARQL, "
+                            "for example ?source or ?entity, or set sparql.source_var / analysis.payload.sources explicitly."
+                        ),
+                    }
+                elif kind == "paths" and not payload.get("source"):
+                    analysis_error = {
+                        "kind": "missing_source",
+                        "message": (
+                            "paths analysis requires analysis.payload.source, "
+                            "or a SPARQL result column containing a URI anchor that the client can auto-derive."
+                        ),
+                        "hint": (
+                            "Return at least one entity URI column from the main SPARQL, "
+                            "for example ?source or ?entity, or set sparql.source_var / analysis.payload.source explicitly."
+                        ),
+                    }
+                else:
+                    if kind in ("paths", "paths-batch") and "mode" not in payload:
+                        payload["mode"] = "paths"
+                    endpoint_map = {
+                        "paths": "/analysis/paths",
+                        "paths-batch": "/analysis/paths/batch",
+                        "neighborhood": "/analysis/neighborhood",
+                        "inferred-relations": "/analysis/inferred-relations",
+                        "explain": "/analysis/explain",
+                    }
+                    endpoint = endpoint_map.get(kind)
+                    if endpoint is None:
+                        raise SystemExit(f"Unsupported analysis kind: {kind}")
+                    analysis_response = request_fn("POST", f"{base_url}{endpoint}", payload)
 
-        return {
+        response = {
             "template": plan["template"],
-            "schema": schema,
-            "profiles": profiles,
             "samples": samples,
             "sparql": sparql_response,
             "analysis": analysis_response,
             "analysis_meta": analysis_meta,
         }
+        if analysis_error is not None:
+            response["status"] = "partial_success"
+            response["analysis_error"] = analysis_error
+        elif analysis_skipped is not None:
+            response["status"] = "empty_result"
+            response["analysis_skipped"] = analysis_skipped
+        else:
+            response["status"] = "ok"
+        if plan.get("include_schema"):
+            response["schema"] = schema
+            response["schema_included"] = True
+        else:
+            response["schema_summary"] = summarize_schema(schema)
+            response["schema_included"] = False
+
+        if profiles is not None:
+            if plan.get("include_profiles"):
+                response["profiles"] = profiles
+                response["profiles_included"] = True
+            else:
+                response["profiles_summary"] = summarize_profiles(profiles)
+                response["profiles_included"] = False
+
+        return response
 
     try:
         return run_plan(http_request_json)
@@ -741,6 +869,11 @@ def main() -> None:
 
     require_schema_state(state_file, base_url, ttl_seconds, args.command)
     payload = load_json_payload(args.json, args.json_file)
+    if args.command == "analysis-paths" and isinstance(payload, dict) and payload.get("sources") and not payload.get("source"):
+        args.command = "analysis-paths-batch"
+    elif args.command == "analysis-paths-batch" and isinstance(payload, dict) and payload.get("source") and not payload.get("sources"):
+        payload = dict(payload)
+        payload["sources"] = [payload.pop("source")]
     endpoint_map = {
         "analysis-paths": "/analysis/paths",
         "analysis-paths-batch": "/analysis/paths/batch",

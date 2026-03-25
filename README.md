@@ -160,6 +160,7 @@ Windows PowerShell:
 
 - `/causal/{customer_id}` 是兼容接口，不是长期唯一入口
 - `/sample` 是查询工作流的一部分，不是可有可无的调试接口
+- `/health` 主要用于诊断，不是正常查询的固定前置步骤
 
 ## 推荐查询流程
 
@@ -167,9 +168,9 @@ Windows PowerShell:
 
 1. 先查 `/schema`
 2. 如果按手机号、ID、状态、评分等字段过滤，先确认属性 domain
-3. 如果 schema 不够确定，再查 `/sample/{class_name}`
-4. 再写主 SPARQL
-5. 只有当用户问“为什么”“路径是什么”“有哪些隐藏关系”时，才调用 `/analysis/...`
+3. 再写主 SPARQL
+4. 只有当用户问“为什么”“路径是什么”“有哪些隐藏关系”时，才调用 `/analysis/...`
+5. 只有当第一次结构化查询空结果或明显歧义时，才补一次定向 `/sample/{class_name}`
 
 这也是 `obda-query` skill 当前要求遵守的协议。
 
@@ -177,6 +178,25 @@ Windows PowerShell:
 
 - 如果问题同时包含“原因约束”和“动作/状态约束”，主查询必须同时编码这两个条件
 - 例如 `因为网络问题，哪些客户投诉了？` 不能被偷偷放宽成“哪些客户有网络相关事件”
+
+对 `causal_enumeration` 这类题，当前约束更严格：
+
+- 正常路径是 `schema -> run`
+- 不要把 `/health` 当成默认 preflight
+- 不要在第一次 `run` 前先做泛化 `/sample`
+- 如果第一次 `run` 返回 `empty_result` 或 `partial_success`，最多只做一次定向 grounding 修复，然后 rerun 一次
+
+换句话说，`因为网络问题，哪些客户投诉了？` 这一类题的首轮不应该走成：
+
+1. `schema`
+2. `sample event`
+3. `sample customer`
+4. `run`
+
+而应该直接走：
+
+1. `schema`
+2. `run`
 
 ## Skill 与客户端
 
@@ -250,12 +270,40 @@ bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪
 - 它不会自动替你生成最终 SPARQL，也不会直接执行查询
 - 真正执行时仍应使用 `run --json` 或 `run --json-file`
 - 为兼容 Agent 误用，`run "..." --json --template ...` 也会退化为同样的规划模式，但不建议依赖这种写法
+- 执行模式下，`run` 默认只返回 `schema_summary` / `profiles_summary`，避免整份 schema 输出过大而被截断
+- 如果你确实需要完整块，可在计划里显式传入 `include_schema: true` 或 `include_profiles: true`
+- 如果主 SPARQL 已成功、但 analyzer 因缺少 URI 锚点无法继续，`run` 会返回 `status: partial_success` 和 `analysis_error`，而不是整条命令失败
+- 对 `causal_lookup` / `causal_enumeration`，当前固定为“先查询，后分析”；主查询 `0` 行时不会继续 analyzer，而是返回 `status: empty_result`
 
 一个现实约束：
 
 - 当前 `run "自然语言问题" --template ...` 还不是“自然语言直达执行器”
 - 它的职责是返回规划骨架，而不是保证 Agent 一次性生成正确 SPARQL
+
+### 当前推荐的最短线路
+
+普通枚举或因果枚举题，优先收敛到：
+
+1. `schema`
+2. `run --json`
+
+不要默认走成：
+
+1. `schema`
+2. `health`
+3. 泛化 `sample`
+4. 多次试探 `sparql`
+5. 多次单实体 `causal`
+
+这种“先摸索再执行”的路径通常才是分钟级慢查询的主要来源。
 - 如果直接把自然语言问题丢给 Claude Code，再让它现场补全查询与 analyzer payload，仍可能出现多轮试探
+
+当前最常见的剩余偏差是：
+
+- 已经知道问题属于 `causal_enumeration`
+- 但仍然在第一次 `run` 之前先看 `sample event` / `sample customer`
+
+这一步通常不是必须的，而且会把一次正常查询重新拖回“先探索再执行”的老路线。
 
 因此，想要最稳定行为时，应优先把执行计划显式化，而不是只给一个自然语言问题。
 
@@ -267,6 +315,13 @@ bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪
 2. 一条主 SPARQL，返回最终答案所需字段，并至少带一列实体 URI
 3. 如需路径证据，再调用一次 `analysis-paths` 或 `analysis-paths-batch`
 4. 最终回答时明确区分“事实结果”和“路径解释”
+
+对于 `causal_lookup` / `causal_enumeration`，当前实现已经固定为：
+
+- 先查询
+- 后分析
+- 主查询没有命中时，不再继续跑 analyzer
+- 枚举类问题优先一次 `analysis-paths-batch`，而不是逐条 `/causal/{id}`
 
 换句话说：
 

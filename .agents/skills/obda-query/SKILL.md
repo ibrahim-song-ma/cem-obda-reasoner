@@ -22,7 +22,7 @@ Ensure the reasoning server is running:
 Use the bundled client for all server interactions:
 
 ```bash
-bash .agents/skills/obda-query/scripts/obda_api.sh health
+bash .agents/skills/obda-query/scripts/obda_api.sh schema
 ```
 
 Preferred client:
@@ -42,23 +42,28 @@ Before using `run`, choose the matching template for the user's question.
 The following rules are mandatory when this skill is active:
 
 1. In the current turn, fetch `/schema` before writing any SPARQL or calling any analyzer endpoint.
-2. If the query filters by a specific attribute or ID-like field, verify the property's domain in `/schema`.
-3. If schema alone is not enough to disambiguate population or relationship usage, inspect `/sample/{class_name}` before finalizing SPARQL.
-4. Use the bundled client script for server calls instead of ad-hoc `curl`.
-5. Do not invent predicates or rely on remembered schema from earlier turns.
-6. If the server exposes `/analysis/profiles`, consult it before using analyzer endpoints.
-7. If the user asks for root cause, path, hidden relations, solution rationale, or uses explicit causal wording such as "because", "due to", `因为`, `由于`, `导致`, do one analyzer request before the final answer. Do not stop at factual SPARQL alone.
-8. If the user asks for enumeration, coverage, ranking, summary, or "all matching entities", never use `/sample` to produce the result set. Use `/sample` only for grounding, then return to `/sparql` or `/analysis/...`.
-9. Do not produce a final ontology/data answer from `/sample` alone. In the current turn, at least one structured `/sparql` or `/analysis/...` request must support the result, unless the user explicitly asked only for schema/structure inspection.
-10. For multi-step investigation, prefer `obda_api.sh run` or `obda_api.py run` instead of manually sequencing low-level commands.
-11. Do not force all questions through the same path. First classify the question, then choose the smallest matching template.
-12. Do not call legacy/non-existent endpoints such as `/analysis/causal` or `/analyzer`. Use `/analysis/paths*`, `/analysis/neighborhood`, `/analysis/inferred-relations`, `/analysis/explain`, or `/causal/{id}`.
-13. Do not call compatibility endpoints with the wrong entity type or identifier format. Verify the endpoint contract first.
-14. Do not infer "entity count" from row count, and do not infer row count from distinct entities. If the answer mentions both, compute both explicitly.
-15. If `/schema` already exposes the needed object property, do not inspect `/sample` just to rediscover the relation name.
-16. `run` executes only with `--json` or `--json-file`. If you call `run "<question>" --template ...`, treat the result as a planning bundle only, not as a final execution result.
-17. Do not hand-write `GET /analysis/paths?...` query strings. Use `analysis-paths --json`, `analysis-paths-batch --json`, or `run --json`.
-18. When the user question contains both a cause constraint and an action/state constraint, encode both in the main structured query. Do not silently broaden `complained because of X` into `had any X-related event`.
+2. Do not call `/health` as a routine preflight. Use it only when diagnosing transport/server availability after a failure.
+3. If the query filters by a specific attribute or ID-like field, verify the property's domain in `/schema`.
+4. For `causal_enumeration`, the normal client path is `schema -> run`. Do not insert generic `/sample` or `/health` calls before the first `run`.
+5. If schema alone is not enough to disambiguate population or relationship usage, inspect `/sample/{class_name}` before finalizing SPARQL.
+6. Use the bundled client script for server calls instead of ad-hoc `curl`.
+7. Do not invent predicates or rely on remembered schema from earlier turns.
+8. If the server exposes `/analysis/profiles`, consult it before using analyzer endpoints.
+9. If the user asks for root cause, path, hidden relations, solution rationale, or uses explicit causal wording such as "because", "due to", `因为`, `由于`, `导致`, do one analyzer request before the final answer. Do not stop at factual SPARQL alone.
+10. If the user asks for enumeration, coverage, ranking, summary, or "all matching entities", never use `/sample` to produce the result set. Use `/sample` only for grounding, then return to `/sparql` or `/analysis/...`.
+11. Do not produce a final ontology/data answer from `/sample` alone. In the current turn, at least one structured `/sparql` or `/analysis/...` request must support the result, unless the user explicitly asked only for schema/structure inspection.
+12. For multi-step investigation, prefer `obda_api.sh run` or `obda_api.py run` instead of manually sequencing low-level commands.
+13. Do not force all questions through the same path. First classify the question, then choose the smallest matching template.
+14. Do not call legacy/non-existent endpoints such as `/analysis/causal` or `/analyzer`. Use `/analysis/paths*`, `/analysis/neighborhood`, `/analysis/inferred-relations`, `/analysis/explain`, or `/causal/{id}`.
+15. Do not call compatibility endpoints with the wrong entity type or identifier format. Verify the endpoint contract first.
+16. Do not infer "entity count" from row count, and do not infer row count from distinct entities. If the answer mentions both, compute both explicitly.
+17. If `/schema` already exposes the needed object property, do not inspect `/sample` just to rediscover the relation name.
+18. `run` executes only with `--json` or `--json-file`. If you call `run "<question>" --template ...`, treat the result as a planning bundle only, not as a final execution result.
+19. Do not hand-write `GET /analysis/paths?...` query strings. Use `analysis-paths --json`, `analysis-paths-batch --json`, or `run --json`.
+20. When the user question contains both a cause constraint and an action/state constraint, encode both in the main structured query. Do not silently broaden `complained because of X` into `had any X-related event`.
+21. For `causal_lookup` and `causal_enumeration`, the execution order is fixed: main SPARQL first, analyzer second. If the main SPARQL returns zero rows, do not run analyzer.
+22. For `causal_enumeration`, use one batch analyzer request. Do not replace it with per-row or per-entity `/causal/{id}` calls after enumeration.
+23. For `causal_enumeration`, if the first `run` returns `empty_result` or `partial_success`, at most one targeted grounding recovery is allowed: inspect one relevant class via `/sample`, adjust the main query once, and rerun once. Do not enter open-ended sample/grep/SPARQL exploration loops.
 
 If any of the above steps are skipped, the skill has not been followed correctly.
 
@@ -77,6 +82,30 @@ Do not exceed this budget unless:
 - the user explicitly asks for deep investigation or debugging
 
 Slow answers in this repo are usually caused by too many exploratory requests, not by the server itself.
+
+For `causal_enumeration`, the normal external command budget is even smaller:
+
+1. `/schema`
+2. one `run --json`
+
+Only exceed that when the first `run` returns `empty_result`, `partial_success`, or a clear schema ambiguity.
+
+## Fast Path For `causal_enumeration`
+
+If the question matches `因为...哪些...`, `哪些实体因为...`, or another causal result-set question, follow this exact first pass:
+
+1. `schema`
+2. `run --json`
+3. stop and inspect the structured result
+
+Do not do any of the following before that first `run`:
+
+- `/health`
+- generic `/sample`
+- ad-hoc `grep` over schema output
+- hand-written fallback `sparql`
+
+Only after the first `run` returns `empty_result`, `partial_success`, or a clear schema ambiguity may you do one targeted grounding repair and rerun once.
 
 ## Workflow
 
@@ -135,6 +164,16 @@ Use `/sample/{class_name}` to:
 - inspect mapped local names before writing SPARQL
 
 `/sample` is a grounding endpoint, not an optional debugging extra.
+
+For `causal_enumeration`, `/sample` is not part of the default first pass. The default is:
+
+```text
+schema -> run
+```
+
+Use `/sample` only if that first structured attempt comes back empty, ambiguous, or clearly misaligned with actual population.
+
+If you already know the question is `causal_enumeration`, do not preemptively inspect `sample` "just to understand the structure". The first structured attempt must come directly from `schema`.
 
 Do not use `/sample` to:
 
@@ -199,10 +238,15 @@ Runner rule:
 - If the question needs more than one step, use `run` with a chosen template
 - Execution form: `run --json '{...}'` or `run --json-file plan.json`
 - Recovery form only: `run "natural language question" --template <template>` returns a schema-first planning bundle; it does not generate SPARQL for you
+- For `causal_enumeration`, the default command sequence is `schema -> run`. Do not prepend `health`, generic `sample`, or ad-hoc low-level probes before the first `run`
+- For `causal_enumeration`, if you are about to inspect `sample` before the first `run`, stop. That means you are deviating from the fast path
+- `run` execution responses are compact by default: they return `schema_summary` / `profiles_summary` unless you explicitly request `include_schema: true` or `include_profiles: true`
+- If SPARQL succeeds but analyzer cannot continue because no URI anchor is available, `run` may return `status: partial_success` plus `analysis_error`; inspect the main SPARQL result instead of treating it as a transport failure
 - If the question is a direct one-shot lookup, a single low-level command is still acceptable
 - Do not manually emulate `run` when a standard template already fits
 - For `causal_enumeration`, prefer `run` and do not replace the analyzer step with ad-hoc sample inspection
 - For `causal_enumeration`, the main SPARQL should return anchored rows such as `entity_id + evidence_anchor + evidence_type`, not only partial projections
+- For `causal_lookup` and `causal_enumeration`, treat `run` as query-first-then-analysis. Analyzer is a second stage, not a candidate finder
 
 Failure rule:
 
@@ -211,6 +255,8 @@ Failure rule:
 - Do not silently switch to a chain of raw `curl` commands and continue as if the protocol succeeded
 - If raw `curl` can reach `/schema` but `obda_api.sh` cannot, treat that as a client bug, not a server-down conclusion
 - If the primary query is an enumeration, do not replace it with sample browsing after the first successful structured result
+- If `causal_enumeration` returns `status: empty_result`, stop and report no matches unless one targeted grounding sample is genuinely required to debug the schema
+- If `causal_enumeration` returns `status: partial_success`, inspect the structured SPARQL rows first. Only do one targeted grounding recovery if the missing analyzer input is caused by schema/query shape, then rerun once
 
 ### Analyzer Contract Roadmap
 

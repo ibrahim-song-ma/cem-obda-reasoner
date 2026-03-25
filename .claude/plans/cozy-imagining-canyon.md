@@ -218,6 +218,325 @@ customer --hasPerception--> perception
 - 推理和规则能力更强
 - 更适合 rule-based 推理路线
 
+---
+
+## 4. Claude 执行侧补充约束
+
+下面这部分不是 ontology 设计本身，而是为了让 Claude Code 在当前仓库里少走弯路。
+
+### 4.1 当前真实结论
+
+当前慢查询的主要原因不是：
+
+- `owlrl` 太慢
+- `RDFLib` 太慢
+- DuckDB 太慢
+
+而是 Claude 在运行时临场试探：
+
+- 先跑错误形态的 `run`
+- 再多次空 `sparql`
+- 再回退到 `/sample`
+- 再单个实体逐个调用 analyzer
+
+因此当前瓶颈首先是“执行编排不确定”，而不是“推理引擎性能不足”。
+
+### 4.2 Claude 当前应该遵守的执行顺序
+
+对于普通自然语言问答，目标应尽量收敛为 3 次 server round-trip：
+
+1. `schema`
+2. 一条主 `sparql`
+3. 如果问题包含因果/路径语义，再补一次 `analysis`
+
+不要让 Claude 走成：
+
+- `schema`
+- 多次试探式 `sparql`
+- 多次 `/sample`
+- 多次单实体 `/causal`
+
+这类流程会把一个简单问题拖到分钟级。
+
+### 4.3 当前先落地的固定线路
+
+当前先不做 analyzer-first。
+
+先保证下面这条线路稳定：
+
+```text
+schema
+  -> main sparql
+  -> analysis
+```
+
+在 Claude 执行层，这应进一步收敛成：
+
+```text
+schema
+  -> run
+```
+
+其中：
+
+- `run` 负责先执行主查询
+- 只有主查询命中后，才继续 analyzer
+- 主查询 `0` 行时，直接返回 `empty_result`
+- analyzer 缺锚点但主查询成功时，返回 `partial_success`
+
+因此当前的默认纪律应当是：
+
+- 不把 `/health` 当成常规 preflight
+- 不在第一次 `run` 前先做泛化 `/sample`
+- 只在 `empty_result` 或 `partial_success` 后允许一次定向 grounding 修复
+- 不允许回到无上限的 sample / grep / sparql 试探循环
+
+当前最常见的残留问题是：
+
+```text
+schema
+  -> sample event
+  -> sample customer
+  -> run
+```
+
+这比旧流程已经好很多，但仍然不是目标线路。
+
+目标线路仍然应该是：
+
+```text
+schema
+  -> run
+```
+
+也就是说，`sample` 应当是失败恢复工具，而不是 `causal_enumeration` 的首轮习惯动作。
+
+### 4.4 为什么不是先 analysis 再 query
+
+原因不是“理论上不全面”，而是当前 analyzer 的职责不是全图候选发现，而是锚点路径解释。
+
+也就是说，当前 analyzer 更接近：
+
+- explainer
+- constrained path tracer
+
+而不是：
+
+- global cause discovery engine
+
+所以对这类问题：
+
+```text
+因为 X，哪些实体 Y 了？
+```
+
+当前更合理的执行方式是：
+
+1. 先用主查询同时编码 `X` 和 `Y`
+2. 得到候选集合
+3. 再用 analyzer 解释这些候选为什么连上
+
+如果反过来先做 analysis，会立刻遇到几个问题：
+
+- analyzer 需要 `source` 或 `sources`
+- 没有锚点时只能做高噪音全图探索
+- “动作/状态约束”通常更适合在 SPARQL 里表达，而不是在路径遍历里表达
+- 成本更高，且更容易把“网络相关事件”误当成“网络投诉”
+
+### 4.5 未来能力：analysis-first / candidate discovery
+
+以后如果真的要支持“先分析，再找候选”，那不应该继续复用当前 `paths` 契约，而应该单独设计 discovery 能力，例如：
+
+- `/analysis/discover`
+- `/analysis/find-candidates`
+- 基于 profile 的候选发现器
+
+这类能力的输入将更像：
+
+- 目标类型
+- 约束 profile
+- 原因约束
+- 动作约束
+
+而不是当前 `paths` 所要求的：
+
+- `source`
+- `sources`
+
+所以结论是：
+
+- 当前阶段，固定走 query-first-then-analysis
+- 下一阶段，再单独设计 analyzer-first / discovery
+
+并且需要明确：
+
+- 当前 analyzer 是“解释器”，不是“候选发现器”
+- 因此 `causal_lookup` / `causal_enumeration` 的当前线路必须是“先查询，后分析”
+- 若主查询没有候选结果，Analyzer 不应继续执行
+
+### 4.3 `run` 的定位
+
+当前 `run` 不是“自然语言直接执行器”，而是两种模式：
+
+1. 规划模式
+   - `run "问题" --template ...`
+   - 返回 planning bundle
+   - 不保证自动生成正确 SPARQL
+
+2. 执行模式
+   - `run --json` / `run --json-file`
+   - 执行明确的计划
+
+因此：
+
+- 想要探索时，可以先用规划模式
+- 想要稳定时，应优先用执行模式
+- 高频问法不应该每次都靠 Claude 临场补 query
+
+### 4.3.1 当前方案的弹性与短板
+
+当前方案的优点是：
+
+- 不把 CEM 的具体业务链路写死到通用 Skill
+- 保留 query-first-then-analysis 的通用协议
+- 允许不同本体在同一套 Skill 协议下工作
+
+因此从“跨场景复用”角度看，它比把 `customer -> event -> perception` 之类路径硬编码进 Skill 更有弹性。
+
+但当前短板也很明确：
+
+- 首轮失败最常见的原因不是 analyzer，而是主 SPARQL 写错或写窄
+- 一旦主查询 `empty_result`，Claude 仍然容易进入恢复性探索
+- 这说明当前问题主要是“查询生成过于自由”，而不是“先查询后分析的方向错了”
+
+所以当前真正的 tradeoff 是：
+
+- 保持 Skill 通用，会降低首轮命中率
+- 写死 repo 级业务路径，会提高命中率，但会污染通用 Skill
+
+当前决策是：
+
+- 保留通用 Skill
+- 不把 CEM 特化语义回灌到 Skill
+- 通过“受约束查询生成”而不是“业务硬编码”来提高首轮命中率
+
+### 4.3.2 当前首轮失败的真实根因
+
+到目前为止，`causal_enumeration` 的首轮失败主要不是因为：
+
+- server 不可用
+- analyzer 不可用
+- graph 中没有数据
+
+而是因为 Claude 在首轮会自由拼整条 SPARQL，最常见的失败模式包括：
+
+- object property 方向写错
+- 过滤条件写得过严
+- 谓词名虽然存在，但作用在错误的实体上
+- 同时包含“原因约束 + 动作约束”时，只编码了其中一部分，或把两者编码得过窄
+
+因此：
+
+- 当前主失败点在 query shape
+- analyzer 只是第二阶段
+- `sample` 只能作为有限恢复工具，不能作为默认补救路径
+
+### 4.4 当前最该优化的方向
+
+短期：
+
+- 用 schema-first + 单主查询 + 单 batch analysis 收敛流程
+- 尽量避免通过 `/sample` 重新发现 schema 已经给出的关系
+- 避免把 `analysis-paths` 和 `analysis-paths-batch` 混用
+- 把 SPARQL 生成从“自由文本生成”收紧到“受约束生成”
+
+中期：
+
+- 为高频问法沉淀 repo 级模板
+- 让主查询固定返回实体 URI 锚点列，供 batch analyzer 自动使用
+- 增加主查询 shape validator，在执行前就检查方向、谓词存在性、URI 锚点列
+
+长期：
+
+- 做真正的自然语言到执行计划的确定性 compiler
+- 减少 Claude 在运行时自己“猜 SPARQL / 猜 analyzer payload / 猜 source 列”
+
+### 4.4.1 下一步明确实现项：受约束 Query Compiler / Validator
+
+下一阶段不再优先补提示词，而是实现一个更硬的查询生成层。
+
+目标不是做业务写死模板，而是做“结构受约束、语义仍通用”的 compiler。
+
+建议输入槽位至少包括：
+
+- target entity class
+- anchor entity class
+- cause constraint
+- action/state constraint
+- required return columns
+- preferred URI anchor column
+
+compiler 生成主查询后，先做本地校验，再决定是否真正执行。
+
+至少需要校验：
+
+- 谓词是否存在于 `/schema`
+- object property 方向是否匹配 domain / range
+- 主查询是否同时编码了 cause constraint 和 action/state constraint
+- `causal_enumeration` 是否返回至少一列 URI 锚点
+- 返回列是否足够支撑最终 answer 和 batch analysis
+
+当前明确不做的事：
+
+- 不把 CEM 专属业务词汇固化到通用 Skill
+- 不把 analyzer 改成首轮候选发现器
+- 不让 `empty_result` 后自动进入无约束 sample/grep/sparql 试探链
+
+### 4.4.2 恢复线路也需要结构化
+
+当首轮 `run` 返回 `empty_result` 或 `partial_success` 时，恢复步骤也应受约束，而不是开放探索。
+
+目标恢复线路应当是：
+
+```text
+schema
+  -> run
+  -> one targeted sample
+  -> rerun
+```
+
+而不是：
+
+```text
+schema
+  -> run
+  -> sample customer
+  -> sample event
+  -> sample perception
+  -> raw sparql
+  -> single analysis
+```
+
+恢复阶段至少应满足：
+
+- 只允许一个最相关类做 grounding
+- grounding 完成后必须回到 `run`
+- 不允许掉回手写 `sparql` 主导流程
+- 不允许用单个 `analysis-paths` 结果泛化到整个枚举结果集
+
+### 4.5 `.claude` 与 `.agents` 的关系
+
+当前 Claude 测试时应理解为：
+
+- `.claude/skills/obda-query/SKILL.md` 是 Claude 侧说明
+- 实际调用的客户端脚本仍然是 `.agents/skills/obda-query/scripts/obda_api.sh`
+- 因此 client 逻辑修复不需要复制一份到 `.claude/scripts`
+
+换句话说：
+
+- skill 文档要同步
+- client 代码只维护一份
+
 弱项：
 
 - 对本地 Python 生态不如当前栈直接
@@ -555,6 +874,38 @@ POST /analysis/inferred-relations
 - 这是 explanation/analyzer
 - 不是 OWL 推理本身
 
+### 8.2.0 当前 Analyzer 的真实职责
+
+当前 `analysis/paths*` 与 `/causal/{customer_id}` 的职责应明确为：
+
+- 对已给定锚点做受约束路径分析
+- 对当前候选结果做解释
+- 为 SPARQL 结果补充“为什么连得上”的路径证据
+
+它们当前**不应**被理解为：
+
+- 全图候选发现器
+- 自动因果发现引擎
+- 先分析、后筛选的通用业务求解器
+
+因此当前推荐执行路线是：
+
+```text
+schema
+  -> main sparql
+  -> analyzer (optional, only if sparql found candidates)
+```
+
+而不是：
+
+```text
+schema
+  -> analyzer first
+  -> try to infer final candidate set
+```
+
+后者属于未来能力，不属于当前 `paths` 接口的职责边界。
+
 ### 8.2.1 Analyzer 推荐输入契约
 
 为了避免把低层图遍历参数暴露给 Skill，推荐将输入拆成两层。
@@ -750,6 +1101,34 @@ Skill 调用 Analyzer 的推荐顺序：
 - 聚合统计
 - 简单关系查询
 
+### 8.2.7 未来的 Analyzer-First 方向
+
+如果未来希望支持“先分析，再发现候选”，那需要新增一类独立能力，而不是继续复用当前 `paths` 接口。
+
+推荐未来拆分为：
+
+```text
+POST /analysis/discover
+POST /analysis/find-candidates
+POST /analysis/classify-subgraph
+```
+
+其职责可以是：
+
+- 从给定 profile 出发，在受约束图中发现候选实体集合
+- 自动识别值得进一步解释的 source 节点
+- 对候选集合再交给 `/analysis/paths` 或 `/analysis/explain`
+
+因此未来理想形态可以是两段式：
+
+```text
+discover
+  -> candidate set
+  -> paths/explain
+```
+
+但这属于未来能力，不应与当前 `query-first-then-analysis` 的线路混用。
+
 ### 8.3 向后兼容 API
 
 为了和现有 Skill 平滑配合，短期内保留：
@@ -933,6 +1312,23 @@ customer_hasPerception o perception_suggestsStrategy -> customer_suggestsStrateg
 
 不得在“精简 Server API”的名义下删除
 
+### 任务 4.6：实现 Query Compiler / Validator
+
+目标：
+
+- 保留 query-first-then-analysis
+- 不污染通用 Skill
+- 提高首轮主查询命中率
+
+最低实现要求：
+
+- 将 `causal_enumeration` 的主查询生成改为槽位化
+- 在执行前做 schema 约束校验
+- 强制返回 URI 锚点列
+- 将恢复路径收敛为“一次定向 sample + 一次 rerun”
+
+这项任务是当前下一轮的优先级最高项，应作为后续恢复工作的直接起点。
+
 ### 任务 5：决定长期路线
 
 做一次明确选择：
@@ -987,6 +1383,21 @@ customer_hasPerception o perception_suggestsStrategy -> customer_suggestsStrateg
 
 - 减少手工维护 profile 的成本
 - 保持本体增大后的灵活性
+
+### 12.2.1 下次恢复时的直接入口
+
+如果后续要从本文档继续工作，优先从下面这个问题恢复：
+
+```text
+如何在不污染通用 Skill 的前提下，为 causal_enumeration 增加受约束的 SPARQL compiler / validator，
+从而减少首轮 empty_result，并把恢复路径收敛为 one targeted sample + one rerun？
+```
+
+换句话说，下次工作的起点不是继续讨论“要不要先 analysis”，而是：
+
+- 保留 query-first-then-analysis
+- 收紧主查询生成
+- 收紧恢复路径
 - 让 Skill 只表达意图，不处理图搜索细节
 
 ### 12.3 远期：分层迁移与平台升级
