@@ -2,6 +2,10 @@
 set -euo pipefail
 
 BASE_URL="${OBDA_BASE_URL:-http://127.0.0.1:8000}"
+STATE_FILE="${OBDA_STATE_FILE:-/tmp/obda_query_client_state.json}"
+SCHEMA_TTL_SECONDS="${OBDA_SCHEMA_TTL_SECONDS:-900}"
+PY_CLIENT=".venv/bin/python"
+PY_SCRIPT=".agents/skills/obda-query/scripts/obda_api.py"
 
 usage() {
   cat <<'EOF'
@@ -9,12 +13,16 @@ Usage:
   obda_api.sh health
   obda_api.sh schema
   obda_api.sh profiles
+  obda_api.sh templates
   obda_api.sh reload
   obda_api.sh sample <class_name> [limit]
   obda_api.sh causal <customer_id>
   obda_api.sh sparql --query "<SPARQL>"
-  obda_api.sh sparql --query-file /path/to/query.rq
+  obda_api.sh sparql --query-file /path/to/query.rq   # only when you intentionally keep the query file
+  obda_api.sh run --json '{"template":"fact_lookup", ...}'
+  obda_api.sh run --json-file /path/to/run-plan.json
   obda_api.sh analysis-paths --json '<json>'
+  obda_api.sh analysis-paths-batch --json '<json>'
   obda_api.sh analysis-paths --json-file /path/to/payload.json
   obda_api.sh analysis-neighborhood --json '<json>'
   obda_api.sh analysis-inferred-relations --json '<json>'
@@ -22,22 +30,18 @@ Usage:
 EOF
 }
 
-json_payload_from_file() {
-  local file_path="$1"
-  cat "$file_path"
-}
+run_py_client() {
+  if [[ ! -x "${PY_CLIENT}" ]]; then
+    echo "Python virtualenv not found: ${PY_CLIENT}" >&2
+    echo "Please create it first: python3 -m venv .venv" >&2
+    exit 1
+  fi
 
-json_payload_from_query() {
-  local query_text="$1"
-  python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}, ensure_ascii=False))' "$query_text"
-}
-
-post_json() {
-  local endpoint="$1"
-  local payload="$2"
-  curl -s -X POST "${BASE_URL}${endpoint}" \
-    -H "Content-Type: application/json" \
-    --data-binary "$payload"
+  "${PY_CLIENT}" "${PY_SCRIPT}" \
+    --base-url "${BASE_URL}" \
+    --state-file "${STATE_FILE}" \
+    --schema-ttl-seconds "${SCHEMA_TTL_SECONDS}" \
+    "$@"
 }
 
 if [[ $# -lt 1 ]]; then
@@ -49,17 +53,8 @@ command="$1"
 shift
 
 case "$command" in
-  health)
-    curl -s "${BASE_URL}/health"
-    ;;
-  schema)
-    curl -s "${BASE_URL}/schema"
-    ;;
-  profiles)
-    curl -s "${BASE_URL}/analysis/profiles"
-    ;;
-  reload)
-    curl -s -X POST "${BASE_URL}/reload"
+  health|schema|profiles|templates|reload)
+    run_py_client "$command" "$@"
     ;;
   sample)
     class_name="${1:-}"
@@ -68,7 +63,7 @@ case "$command" in
       echo "sample requires <class_name>" >&2
       exit 1
     fi
-    curl -s "${BASE_URL}/sample/${class_name}?limit=${limit}"
+    run_py_client sample "$class_name" --limit "$limit"
     ;;
   causal)
     customer_id="${1:-}"
@@ -76,60 +71,16 @@ case "$command" in
       echo "causal requires <customer_id>" >&2
       exit 1
     fi
-    curl -s "${BASE_URL}/causal/${customer_id}"
+    run_py_client causal "$customer_id"
     ;;
   sparql)
-    if [[ $# -lt 2 ]]; then
-      echo "sparql requires --query or --query-file" >&2
-      exit 1
-    fi
-    case "$1" in
-      --query)
-        payload="$(json_payload_from_query "$2")"
-        ;;
-      --query-file)
-        if [[ ! -f "$2" ]]; then
-          echo "query file not found: $2" >&2
-          exit 1
-        fi
-        query_text="$(cat "$2")"
-        payload="$(json_payload_from_query "$query_text")"
-        ;;
-      *)
-        echo "Unknown sparql option: $1" >&2
-        exit 1
-        ;;
-    esac
-    post_json "/sparql" "$payload"
+    run_py_client sparql "$@"
     ;;
-  analysis-paths|analysis-neighborhood|analysis-inferred-relations|analysis-explain)
-    if [[ $# -lt 2 ]]; then
-      echo "${command} requires --json or --json-file" >&2
-      exit 1
-    fi
-    case "$1" in
-      --json)
-        payload="$2"
-        ;;
-      --json-file)
-        if [[ ! -f "$2" ]]; then
-          echo "json file not found: $2" >&2
-          exit 1
-        fi
-        payload="$(json_payload_from_file "$2")"
-        ;;
-      *)
-        echo "Unknown ${command} option: $1" >&2
-        exit 1
-        ;;
-    esac
-    case "$command" in
-      analysis-paths) endpoint="/analysis/paths" ;;
-      analysis-neighborhood) endpoint="/analysis/neighborhood" ;;
-      analysis-inferred-relations) endpoint="/analysis/inferred-relations" ;;
-      analysis-explain) endpoint="/analysis/explain" ;;
-    esac
-    post_json "$endpoint" "$payload"
+  run)
+    run_py_client run "$@"
+    ;;
+  analysis-paths|analysis-paths-batch|analysis-neighborhood|analysis-inferred-relations|analysis-explain)
+    run_py_client "$command" "$@"
     ;;
   *)
     echo "Unknown command: $command" >&2

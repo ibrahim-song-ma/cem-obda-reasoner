@@ -128,6 +128,21 @@ class AnalysisRequest(BaseModel):
     include_explicit_only: Optional[bool] = None
 
 
+class BatchAnalysisRequest(BaseModel):
+    mode: str = "paths"
+    profile: str = "default"
+    sources: List[str]
+    target: Optional[str] = None
+    max_depth: Optional[int] = None
+    limit: Optional[int] = None
+    direction: Optional[str] = None
+    allowed_predicates: Optional[List[str]] = None
+    exclude_predicates: Optional[List[str]] = None
+    include_middle_objects: Optional[bool] = None
+    include_inferred_only: Optional[bool] = None
+    include_explicit_only: Optional[bool] = None
+
+
 class ExplainRequest(BaseModel):
     profile: str = "causal"
     source: Optional[str] = None
@@ -542,6 +557,18 @@ def explain_paths(paths: List[List[Dict[str, Any]]]) -> List[str]:
     return explanations
 
 
+def dedupe_preserve_order(values: List[str]) -> List[str]:
+    """Deduplicate a list while preserving original order."""
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
 def extract_schema(graph: Graph) -> Dict[str, Any]:
     """Extract ontology schema information."""
     schema = {
@@ -753,6 +780,49 @@ def post_analysis_paths(request: AnalysisRequest):
     return analyze_paths(GRAPH, source, settings, target=target)
 
 
+@app.post("/analysis/paths/batch")
+def post_analysis_paths_batch(request: BatchAnalysisRequest):
+    """Run constrained path analysis for multiple sources under shared settings."""
+    if not GRAPH:
+        raise HTTPException(status_code=503, detail="Graph not initialized")
+    if not request.sources:
+        raise HTTPException(status_code=400, detail="sources is required")
+
+    unique_sources = dedupe_preserve_order(request.sources)
+    target = normalize_uri(request.target) if request.target else None
+    results = []
+
+    for source_value in unique_sources:
+        source_request = AnalysisRequest(
+            mode=request.mode,
+            profile=request.profile,
+            source=source_value,
+            target=request.target,
+            max_depth=request.max_depth,
+            limit=request.limit,
+            direction=request.direction,
+            allowed_predicates=request.allowed_predicates,
+            exclude_predicates=request.exclude_predicates,
+            include_middle_objects=request.include_middle_objects,
+            include_inferred_only=request.include_inferred_only,
+            include_explicit_only=request.include_explicit_only,
+        )
+        settings = resolve_profile_settings(source_request)
+        source = normalize_uri(source_value)
+        results.append(analyze_paths(GRAPH, source, settings, target=target))
+
+    return {
+        "mode": "paths-batch",
+        "profile": request.profile,
+        "source_count": len(unique_sources),
+        "matched_source_count": sum(1 for item in results if item["path_count"] > 0),
+        "target": str(target) if target else None,
+        "total_path_count": sum(item["path_count"] for item in results),
+        "truncated": any(item["truncated"] for item in results),
+        "results": results,
+    }
+
+
 @app.post("/analysis/neighborhood")
 def post_analysis_neighborhood(request: AnalysisRequest):
     """Return a constrained neighborhood around a source node."""
@@ -848,12 +918,10 @@ def get_class_samples(class_name: str, limit: int = 3):
 
     class_ref = URIRef(class_uri)
 
+    instance_uris = list(GRAPH.subjects(RDF.type, class_ref))
     samples = []
-    count = 0
 
-    for instance in GRAPH.subjects(RDF.type, class_ref):
-        if count >= limit:
-            break
+    for instance in instance_uris[:limit]:
 
         instance_data = {
             "uri": str(instance),
@@ -872,12 +940,15 @@ def get_class_samples(class_name: str, limit: int = 3):
                 instance_data["object_properties"][prop_local] = value_local
 
         samples.append(instance_data)
-        count += 1
 
     return {
         "class_name": class_name,
         "class_uri": class_uri,
+        "purpose": "grounding_only",
+        "limit": limit,
         "sample_count": len(samples),
+        "returned_count": len(samples),
+        "truncated": len(instance_uris) > limit,
         "samples": samples
     }
 
