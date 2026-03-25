@@ -242,6 +242,7 @@ Runner rule:
 - For `causal_enumeration`, if you are about to inspect `sample` before the first `run`, stop. That means you are deviating from the fast path
 - `run` execution responses are compact by default: they return `schema_summary` / `profiles_summary` unless you explicitly request `include_schema: true` or `include_profiles: true`
 - If SPARQL succeeds but analyzer cannot continue because no URI anchor is available, `run` may return `status: partial_success` plus `analysis_error`; inspect the main SPARQL result instead of treating it as a transport failure
+- For `causal_lookup` and `causal_enumeration`, if `run` returns a `presentation` field, use it as the primary input for the final answer. Treat raw `analysis.paths` as supporting evidence, not as the default user-facing wording
 - If the question is a direct one-shot lookup, a single low-level command is still acceptable
 - Do not manually emulate `run` when a standard template already fits
 - For `causal_enumeration`, prefer `run` and do not replace the analyzer step with ad-hoc sample inspection
@@ -257,6 +258,7 @@ Failure rule:
 - If the primary query is an enumeration, do not replace it with sample browsing after the first successful structured result
 - If `causal_enumeration` returns `status: empty_result`, stop and report no matches unless one targeted grounding sample is genuinely required to debug the schema
 - If `causal_enumeration` returns `status: partial_success`, inspect the structured SPARQL rows first. Only do one targeted grounding recovery if the missing analyzer input is caused by schema/query shape, then rerun once
+- If `presentation` is available, do not restate raw machine paths such as `entity_A --predicate--> entity_B` unless the user explicitly asks for raw path details
 
 ### Analyzer Contract Roadmap
 

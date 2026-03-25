@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -444,6 +444,540 @@ def sparql_row_count(sparql_response: Optional[Dict[str, Any]]) -> int:
     return 0
 
 
+def uri_local_name(value: Any) -> Optional[str]:
+    """Return the local name fragment for a URI-like value."""
+    if not is_uri_like(value):
+        return None
+    if "#" in value:
+        return value.rsplit("#", 1)[-1]
+    return value.rstrip("/").rsplit("/", 1)[-1]
+
+
+def schema_class_label_map(schema: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Build a local_name -> human label map from schema classes."""
+    if not isinstance(schema, dict):
+        return {}
+
+    labels: Dict[str, str] = {}
+    classes = schema.get("classes")
+    if not isinstance(classes, list):
+        return labels
+
+    for item in classes:
+        if not isinstance(item, dict):
+            continue
+        local_name = item.get("local_name")
+        label = item.get("label") or local_name
+        if local_name:
+            labels[local_name] = label
+    return labels
+
+
+def class_key_from_uri(value: Any) -> Optional[str]:
+    """Infer the class-like prefix from a resource URI local name."""
+    local_name = uri_local_name(value)
+    if not local_name:
+        return None
+    if "_" in local_name:
+        return local_name.split("_", 1)[0]
+    return local_name
+
+
+def class_label_for_uri(value: Any, class_labels: Dict[str, str]) -> Optional[str]:
+    """Resolve a human-friendly class label for a URI-like value."""
+    class_key = class_key_from_uri(value)
+    if not class_key:
+        return None
+    return class_labels.get(class_key, class_key)
+
+
+def pick_first_matching_value(fields: Dict[str, Any], suffixes: List[str]) -> Optional[str]:
+    """Pick the first non-empty string value whose key matches one of the suffixes."""
+    lowered_suffixes = [suffix.lower() for suffix in suffixes]
+    for key, value in fields.items():
+        if value in (None, "") or not isinstance(value, (str, int, float, bool)):
+            continue
+        key_lower = key.lower()
+        if any(key_lower.endswith(suffix) for suffix in lowered_suffixes):
+            return str(value)
+
+    for key, value in fields.items():
+        if value in (None, "") or not isinstance(value, (str, int, float, bool)):
+            continue
+        key_lower = key.lower()
+        if any(suffix in key_lower for suffix in lowered_suffixes):
+            return str(value)
+    return None
+
+
+def prefixed_literal_fields(row: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    """Collect literal fields whose variable names share a common prefix."""
+    prefix_lower = prefix.lower()
+    results: Dict[str, Any] = {}
+    for key, value in row.items():
+        if key == prefix or value is None or is_uri_like(value):
+            continue
+        if key.lower().startswith(prefix_lower):
+            results[key] = value
+    return results
+
+
+def merged_prefixed_literal_fields(rows: List[Dict[str, Any]], prefix: str) -> Dict[str, Any]:
+    """Merge prefixed literal fields across rows, keeping the first non-empty value."""
+    merged: Dict[str, Any] = {}
+    for row in rows:
+        for key, value in prefixed_literal_fields(row, prefix).items():
+            if key not in merged and value not in (None, ""):
+                merged[key] = value
+    return merged
+
+
+def choose_source_var(
+    sparql_response: Optional[Dict[str, Any]],
+    sparql_spec: Optional[Dict[str, Any]],
+    analysis_meta: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Choose the primary source URI variable for presentation grouping."""
+    if isinstance(analysis_meta, dict):
+        source_var = analysis_meta.get("auto_derived_source_var")
+        if isinstance(source_var, str) and source_var:
+            return source_var
+
+    if isinstance(sparql_spec, dict):
+        source_var = sparql_spec.get("source_var")
+        if isinstance(source_var, str) and source_var:
+            return source_var
+
+    derived = derive_uri_sources_from_sparql(sparql_response, multiple=True)
+    return derived.get("source_var")
+
+
+def choose_evidence_var(rows: List[Dict[str, Any]], source_var: str) -> Optional[str]:
+    """Choose the most likely evidence anchor URI column from SPARQL rows."""
+    if not rows:
+        return None
+
+    first_row = rows[0]
+    uri_vars = [key for key, value in first_row.items() if key != source_var and is_uri_like(value)]
+    if not uri_vars:
+        return None
+
+    priorities = ("event", "evidence", "issue", "problem", "complaint", "target")
+    for priority in priorities:
+        for key in uri_vars:
+            if priority in key.lower():
+                return key
+    return uri_vars[0]
+
+
+def build_entity_display(
+    source_var: str,
+    source_uri: str,
+    rows: List[Dict[str, Any]],
+    class_labels: Dict[str, str],
+) -> Dict[str, Any]:
+    """Build a human-oriented entity summary for a grouped source URI."""
+    literal_fields = merged_prefixed_literal_fields(rows, source_var)
+    display_name = pick_first_matching_value(
+        literal_fields,
+        ["name", "label", "title", "姓名", "名称", "名字"],
+    )
+    display_id = pick_first_matching_value(
+        literal_fields,
+        ["id", "code", "编号", "客户id", "客户_id"],
+    )
+
+    local_name = uri_local_name(source_uri)
+    return {
+        "display_name": display_name or display_id or local_name,
+        "display_id": display_id,
+        "type_label": class_label_for_uri(source_uri, class_labels),
+        "uri": source_uri,
+        "local_name": local_name,
+        "display_fields": literal_fields,
+    }
+
+
+def build_evidence_items(
+    rows: List[Dict[str, Any]],
+    source_var: str,
+    evidence_var: Optional[str],
+    class_labels: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Build de-duplicated evidence items from grouped SPARQL rows."""
+    items: List[Dict[str, Any]] = []
+    seen_keys: Set[str] = set()
+
+    for row in rows:
+        evidence_uri = row.get(evidence_var) if evidence_var else None
+        literal_fields = prefixed_literal_fields(row, evidence_var) if evidence_var else {}
+
+        display_label = pick_first_matching_value(
+            literal_fields,
+            ["type", "label", "name", "title", "kind", "category", "类型", "名称"],
+        )
+        display_description = pick_first_matching_value(
+            literal_fields,
+            ["description", "desc", "summary", "reason", "problem", "remark", "描述", "说明"],
+        )
+        display_id = pick_first_matching_value(
+            literal_fields,
+            ["id", "code", "编号"],
+        )
+
+        if display_label is None and evidence_uri is not None:
+            display_label = class_label_for_uri(evidence_uri, class_labels) or uri_local_name(evidence_uri)
+
+        dedupe_key = json.dumps(
+            {
+                "evidence_uri": evidence_uri,
+                "display_id": display_id,
+                "display_label": display_label,
+                "display_description": display_description,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+
+        refs: Dict[str, Any] = {}
+        if evidence_uri is not None:
+            refs["uri"] = evidence_uri
+            refs["local_name"] = uri_local_name(evidence_uri)
+        if display_id is not None:
+            refs["id"] = display_id
+
+        items.append({
+            "display_label": display_label,
+            "display_description": display_description,
+            "display_id": display_id,
+            "type_label": class_label_for_uri(evidence_uri, class_labels) if evidence_uri is not None else None,
+            "display_fields": literal_fields,
+            "refs": refs,
+        })
+
+    return items
+
+
+def summarize_uri_groups(uris: Set[str], class_labels: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Summarize URI sets by inferred class label for display."""
+    by_type: Dict[str, Dict[str, Any]] = {}
+    for uri in sorted(uris):
+        type_key = class_key_from_uri(uri) or "resource"
+        bucket = by_type.setdefault(
+            type_key,
+            {
+                "type_key": type_key,
+                "type_label": class_labels.get(type_key, type_key),
+                "count": 0,
+                "refs": [],
+            },
+        )
+        bucket["count"] += 1
+        bucket["refs"].append({
+            "uri": uri,
+            "local_name": uri_local_name(uri),
+        })
+
+    return sorted(
+        by_type.values(),
+        key=lambda item: (-item["count"], item["type_label"] or ""),
+    )
+
+
+def build_reasoning_summary(
+    source_uri: str,
+    analysis_result: Optional[Dict[str, Any]],
+    evidence_items: List[Dict[str, Any]],
+    class_labels: Dict[str, str],
+) -> Dict[str, Any]:
+    """Compress raw analyzer paths into a human-oriented structural summary."""
+    summary: Dict[str, Any] = {
+        "available": False,
+        "path_count": 0,
+        "truncated": False,
+        "direct_relation_count": len(evidence_items),
+        "direct_summary": [],
+        "mediator_summary": [],
+        "terminal_summary": [],
+    }
+
+    direct_uris = {
+        refs["uri"]
+        for item in evidence_items
+        for refs in [item.get("refs", {})]
+        if isinstance(refs, dict) and is_uri_like(refs.get("uri"))
+    }
+    if direct_uris:
+        summary["direct_summary"] = summarize_uri_groups(direct_uris, class_labels)
+
+    if not isinstance(analysis_result, dict):
+        summary["trace_refs"] = {
+            "source_uri": source_uri,
+            "direct_uris": sorted(direct_uris),
+            "mediator_uris": [],
+            "terminal_uris": [],
+        }
+        return summary
+
+    paths = analysis_result.get("paths")
+    if not isinstance(paths, list):
+        summary["trace_refs"] = {
+            "source_uri": source_uri,
+            "direct_uris": sorted(direct_uris),
+            "mediator_uris": [],
+            "terminal_uris": [],
+        }
+        return summary
+
+    mediator_uris: Set[str] = set()
+    terminal_uris: Set[str] = set()
+
+    for path in paths:
+        if not isinstance(path, list) or not path:
+            continue
+        objects = [step.get("object") for step in path if isinstance(step, dict) and is_uri_like(step.get("object"))]
+        if not objects:
+            continue
+
+        terminal_uri = objects[-1]
+        if terminal_uri not in direct_uris and terminal_uri != source_uri:
+            terminal_uris.add(terminal_uri)
+
+        for uri in objects[1:-1]:
+            if uri not in direct_uris and uri != source_uri:
+                mediator_uris.add(uri)
+
+    direct_type_keys = {class_key_from_uri(uri) for uri in direct_uris if class_key_from_uri(uri)}
+    terminal_uris = {
+        uri
+        for uri in terminal_uris
+        if uri not in mediator_uris and class_key_from_uri(uri) not in direct_type_keys
+    }
+
+    summary.update({
+        "available": True,
+        "path_count": int(analysis_result.get("path_count", 0)) if isinstance(analysis_result.get("path_count"), int) else 0,
+        "truncated": bool(analysis_result.get("truncated")),
+        "mediator_summary": summarize_uri_groups(mediator_uris, class_labels),
+        "terminal_summary": summarize_uri_groups(terminal_uris, class_labels),
+        "trace_refs": {
+            "source_uri": source_uri,
+            "direct_uris": sorted(direct_uris),
+            "mediator_uris": sorted(mediator_uris),
+            "terminal_uris": sorted(terminal_uris),
+        },
+    })
+    return summary
+
+
+def build_causal_enumeration_presentation(
+    schema: Optional[Dict[str, Any]],
+    sparql_spec: Optional[Dict[str, Any]],
+    sparql_response: Optional[Dict[str, Any]],
+    analysis_response: Optional[Dict[str, Any]],
+    analysis_meta: Optional[Dict[str, Any]],
+    status: str,
+    analysis_error: Optional[Dict[str, Any]],
+    analysis_skipped: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build a structured display model for causal enumeration answers."""
+    if not isinstance(sparql_response, dict):
+        return None
+
+    rows = sparql_response.get("results")
+    if not isinstance(rows, list):
+        return None
+
+    class_labels = schema_class_label_map(schema)
+    source_var = choose_source_var(sparql_response, sparql_spec, analysis_meta)
+
+    grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
+    if source_var:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source_uri = row.get(source_var)
+            if is_uri_like(source_uri):
+                grouped_rows.setdefault(source_uri, []).append(row)
+
+    analysis_results_by_source: Dict[str, Dict[str, Any]] = {}
+    if isinstance(analysis_response, dict):
+        if isinstance(analysis_response.get("results"), list):
+            for item in analysis_response["results"]:
+                if isinstance(item, dict) and is_uri_like(item.get("source")):
+                    analysis_results_by_source[item["source"]] = item
+        elif is_uri_like(analysis_response.get("source")):
+            analysis_results_by_source[analysis_response["source"]] = analysis_response
+
+    groups = []
+    distinct_evidence_refs: Set[str] = set()
+    for source_uri, source_rows in grouped_rows.items():
+        evidence_var = choose_evidence_var(source_rows, source_var)
+        evidence_items = build_evidence_items(source_rows, source_var, evidence_var, class_labels)
+        for item in evidence_items:
+            refs = item.get("refs", {})
+            if isinstance(refs, dict) and is_uri_like(refs.get("uri")):
+                distinct_evidence_refs.add(refs["uri"])
+
+        reasoning_summary = build_reasoning_summary(
+            source_uri,
+            analysis_results_by_source.get(source_uri),
+            evidence_items,
+            class_labels,
+        )
+
+        trace_refs = dict(reasoning_summary.get("trace_refs", {}))
+        trace_refs.update({
+            "source_var": source_var,
+            "evidence_var": evidence_var,
+            "evidence_ids": [
+                item["refs"]["id"]
+                for item in evidence_items
+                if isinstance(item.get("refs"), dict) and item["refs"].get("id")
+            ],
+        })
+
+        groups.append({
+            "entity": build_entity_display(source_var, source_uri, source_rows, class_labels),
+            "evidence": evidence_items,
+            "reasoning_summary": reasoning_summary,
+            "trace_refs": trace_refs,
+        })
+
+    groups.sort(key=lambda item: (
+        item["entity"].get("display_id") or "",
+        item["entity"].get("display_name") or "",
+    ))
+
+    presentation: Dict[str, Any] = {
+        "template": "causal_enumeration",
+        "summary": {
+            "entity_count": len(groups),
+            "record_count": sparql_row_count(sparql_response),
+            "evidence_count": len(distinct_evidence_refs) if distinct_evidence_refs else sum(len(group["evidence"]) for group in groups),
+        },
+        "groups": groups,
+        "analysis_status": {
+            "status": status,
+            "available": bool(analysis_response),
+        },
+    }
+
+    if isinstance(analysis_response, dict):
+        presentation["analysis_status"].update({
+            "source_count": analysis_response.get("source_count"),
+            "matched_source_count": analysis_response.get("matched_source_count"),
+            "total_path_count": analysis_response.get("total_path_count"),
+            "truncated": analysis_response.get("truncated"),
+        })
+
+    if analysis_error is not None:
+        presentation["analysis_status"]["error"] = analysis_error
+    if analysis_skipped is not None:
+        presentation["analysis_status"]["skipped"] = analysis_skipped
+
+    return presentation
+
+
+def build_causal_lookup_presentation(
+    schema: Optional[Dict[str, Any]],
+    sparql_spec: Optional[Dict[str, Any]],
+    sparql_response: Optional[Dict[str, Any]],
+    analysis_response: Optional[Dict[str, Any]],
+    analysis_meta: Optional[Dict[str, Any]],
+    status: str,
+    analysis_error: Optional[Dict[str, Any]],
+    analysis_skipped: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build a structured display model for causal lookup answers."""
+    enumeration_like = build_causal_enumeration_presentation(
+        schema,
+        sparql_spec,
+        sparql_response,
+        analysis_response,
+        analysis_meta,
+        status,
+        analysis_error,
+        analysis_skipped,
+    )
+    if not enumeration_like:
+        return None
+
+    first_group = enumeration_like.get("groups", [])
+    if not first_group:
+        return {
+            "template": "causal_lookup",
+            "summary": enumeration_like.get("summary"),
+            "analysis_status": enumeration_like.get("analysis_status"),
+            "entity": None,
+            "facts": [],
+            "reasoning_summary": {
+                "available": False,
+                "path_count": 0,
+                "truncated": False,
+                "direct_relation_count": 0,
+                "direct_summary": [],
+                "mediator_summary": [],
+                "terminal_summary": [],
+            },
+        }
+
+    group = first_group[0]
+    return {
+        "template": "causal_lookup",
+        "summary": enumeration_like.get("summary"),
+        "analysis_status": enumeration_like.get("analysis_status"),
+        "entity": group.get("entity"),
+        "facts": group.get("evidence", []),
+        "reasoning_summary": group.get("reasoning_summary"),
+        "trace_refs": group.get("trace_refs"),
+    }
+
+
+def build_run_presentation(
+    plan: Dict[str, Any],
+    schema: Optional[Dict[str, Any]],
+    sparql_response: Optional[Dict[str, Any]],
+    analysis_response: Optional[Dict[str, Any]],
+    analysis_meta: Optional[Dict[str, Any]],
+    status: str,
+    analysis_error: Optional[Dict[str, Any]],
+    analysis_skipped: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build an optional presentation layer for human-friendly answer generation."""
+    template = plan.get("template")
+    sparql_spec = plan.get("sparql")
+
+    if template == "causal_enumeration":
+        return build_causal_enumeration_presentation(
+            schema,
+            sparql_spec,
+            sparql_response,
+            analysis_response,
+            analysis_meta,
+            status,
+            analysis_error,
+            analysis_skipped,
+        )
+
+    if template == "causal_lookup":
+        return build_causal_lookup_presentation(
+            schema,
+            sparql_spec,
+            sparql_response,
+            analysis_response,
+            analysis_meta,
+            status,
+            analysis_error,
+            analysis_skipped,
+        )
+
+    return None
+
+
 def build_question_mode_run_response(
     base_url: str,
     question: str,
@@ -707,6 +1241,19 @@ def execute_run_plan(
             else:
                 response["profiles_summary"] = summarize_profiles(profiles)
                 response["profiles_included"] = False
+
+        presentation = build_run_presentation(
+            plan,
+            schema,
+            sparql_response,
+            analysis_response,
+            analysis_meta,
+            response["status"],
+            analysis_error,
+            analysis_skipped,
+        )
+        if presentation is not None:
+            response["presentation"] = presentation
 
         return response
 

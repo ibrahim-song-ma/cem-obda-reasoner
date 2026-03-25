@@ -274,11 +274,33 @@ bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪
 - 如果你确实需要完整块，可在计划里显式传入 `include_schema: true` 或 `include_profiles: true`
 - 如果主 SPARQL 已成功、但 analyzer 因缺少 URI 锚点无法继续，`run` 会返回 `status: partial_success` 和 `analysis_error`，而不是整条命令失败
 - 对 `causal_lookup` / `causal_enumeration`，当前固定为“先查询，后分析”；主查询 `0` 行时不会继续 analyzer，而是返回 `status: empty_result`
+- 对 `causal_lookup` / `causal_enumeration`，`run` 还会额外返回 `presentation` 字段：这是结构化展示模型，不是最终中文话术
+- `presentation` 优先提供人类可读字段与分组摘要，原始 `sparql` / `analysis` 仍然保留用于审计和追踪
 
 一个现实约束：
 
 - 当前 `run "自然语言问题" --template ...` 还不是“自然语言直达执行器”
 - 它的职责是返回规划骨架，而不是保证 Agent 一次性生成正确 SPARQL
+
+### `presentation` 的定位
+
+`presentation` 不是固定中文 formatter。
+
+它的职责是：
+
+- 对原始 `sparql` / `analysis` 结果做分组、去重、计数和路径压缩
+- 优先输出适合人类阅读的 `display` 信息
+- 保留 `refs` 用于追踪，但不把 ID 当成默认主展示内容
+
+当前第一阶段只支持：
+
+- `causal_enumeration`
+- `causal_lookup`
+
+建议：
+
+- Claude 组织最终回答时，优先读 `presentation`
+- 只有在需要调试、审计或深挖路径时，再回头读原始 `analysis.paths`
 
 ### 当前推荐的最短线路
 

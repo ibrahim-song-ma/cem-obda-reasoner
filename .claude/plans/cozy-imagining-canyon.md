@@ -524,6 +524,157 @@ schema
 - 不允许掉回手写 `sparql` 主导流程
 - 不允许用单个 `analysis-paths` 结果泛化到整个枚举结果集
 
+### 4.4.3 最终话术不应直接消费原始路径
+
+当前还有一个独立问题：
+
+- 即使主查询和 analyzer 都执行正确
+- 最终回答仍然可能把路径直接说成：
+  - `customer_CUST002 --hasEvent--> event_EVT001`
+  - `perception_PER002`
+  - `remediationstrategy_STR001`
+
+这对人类阅读并不友好。
+
+这说明当前的痛点不是“缺少答案”，而是“缺少展示层模型”。
+
+### 4.4.4 不要把最终文案硬编码进 Python
+
+当前明确不建议这样做：
+
+- 在 `obda_api.py` 里直接写死最终中文话术模板
+- 让 Python 直接负责完整自然语言回答
+
+原因是：
+
+- 这样会压掉 Claude 的表达能力
+- 也会让不同问答类型的文案风格过早固化
+- 还会把 repo 当前的一套话术习惯误当成通用协议
+
+因此更合理的分工是三层：
+
+1. 原始证据层
+   - `/sparql`
+   - `/analysis`
+
+2. 展示模型层
+   - Python 生成结构化 `presentation`
+   - 做确定性的分组、去重、计数、label 解析、路径压缩
+
+3. 自然语言层
+   - Claude 基于 `presentation` 组织最终回答
+
+也就是说：
+
+- Python 负责“压缩和整理”
+- Claude 负责“表达和措辞”
+
+### 4.4.5 展示层的目标
+
+展示层不是把原始路径再包一层 JSON。
+
+它的目标是：
+
+- 给 Claude 一个更干净、更人类友好的中间结构
+- 让 Claude 不必直接从原始 `paths` 数组里自己猜重点
+- 保留机器可追踪锚点，但不把它们当成主展示内容
+
+因此展示层必须区分两类信息：
+
+- `display`
+  - 面向人类可读
+- `refs`
+  - 面向程序追踪和调试
+
+默认话术应优先消费 `display`，而不是 `refs`。
+
+### 4.4.6 可读化优先级
+
+展示层在生成可读字段时，应使用如下优先级：
+
+1. 业务字段
+   - 如姓名、事件类型、事件描述
+2. `rdfs:label`
+3. 类标签 + 计数摘要
+   - 如“1 个感知分析节点”“3 个修复策略”
+4. ID / local name
+   - 仅作为 `refs`
+   - 不作为默认主话术
+
+因此：
+
+- `EVT001` 不应作为主展示内容
+- `PER002` / `STR001` 如果没有稳定可读 label，不应直接成为主文本
+- 没有可读标签时，应退化成“感知分析节点数 / 修复策略数”这类摘要
+
+### 4.4.7 按 template 区分展示模型，而不是按业务场景区分
+
+展示层需要区分问答类型，但不应绑定 CEM 场景。
+
+推荐按 `template` 建模：
+
+- `causal_enumeration`
+  - 按实体分组
+  - 展示事件证据
+  - 展示路径亮点摘要
+- `causal_lookup`
+  - 展示单实体为什么成立
+  - 展示关键路径亮点
+- `enumeration`
+  - 展示结果集摘要、去重计数、代表字段
+- `fact_lookup`
+  - 展示对象卡片式摘要
+- `hidden_relation`
+  - 展示新增/隐含关系摘要
+
+第一阶段只需要实现：
+
+- `causal_enumeration`
+- `causal_lookup`
+
+### 4.4.8 `presentation` 的建议契约
+
+第一版不输出最终中文文案，而是输出结构化的 `presentation` 字段。
+
+对 `causal_enumeration`，建议至少包含：
+
+- `template`
+- `summary`
+  - `entity_count`
+  - `record_count`
+- `groups`
+  - `entity`
+    - `display_name`
+    - `display_id`
+    - `type_label`
+  - `evidence`
+    - `display_label`
+    - `display_description`
+    - `refs`
+  - `reasoning_summary`
+    - `direct_event_count`
+    - `mediator_summary`
+    - `outcome_summary`
+  - `trace_refs`
+
+其中：
+
+- `display_*` 用于 Claude 直接组织答案
+- `trace_refs` 用于需要时追踪和引用
+
+### 4.4.9 当前下一步的边界
+
+展示层的下一步不是：
+
+- 做固定中文 formatter
+- 做 repo 特化话术模板
+
+而是：
+
+- 先定义 `presentation` 契约
+- 让 `run` 在保留原始 JSON 的同时返回 `presentation`
+- 再由 Claude 基于 `presentation` 组织最终自然语言
+
 ### 4.5 `.claude` 与 `.agents` 的关系
 
 当前 Claude 测试时应理解为：
@@ -1329,6 +1480,34 @@ customer_hasPerception o perception_suggestsStrategy -> customer_suggestsStrateg
 
 这项任务是当前下一轮的优先级最高项，应作为后续恢复工作的直接起点。
 
+### 任务 4.7：设计并实现 Presentation Layer
+
+目标：
+
+- 不把最终话术硬编码到 Python
+- 让原始查询/分析结果先经过结构化展示层
+- 让 Claude 面向 `presentation` 组织最终回答
+
+最低实现要求：
+
+- 在 `run` 返回中增加 `presentation`
+- 第一阶段支持：
+  - `causal_enumeration`
+  - `causal_lookup`
+- 展示层支持：
+  - 分组
+  - 去重
+  - 计数
+  - label 解析
+  - 路径亮点压缩
+  - `display` / `refs` 分离
+
+明确不做：
+
+- 直接在 Python 中输出最终中文答案
+- 用 `EVT001 / PER002 / STR001` 作为默认主展示内容
+- 把 CEM 专属话术写成通用 formatter
+
 ### 任务 5：决定长期路线
 
 做一次明确选择：
@@ -1399,6 +1578,18 @@ customer_hasPerception o perception_suggestsStrategy -> customer_suggestsStrateg
 - 收紧主查询生成
 - 收紧恢复路径
 - 让 Skill 只表达意图，不处理图搜索细节
+
+如果后续优先做展示优化，则直接从下面这个问题恢复：
+
+```text
+如何为 run 增加 presentation 层，
+让 Python 只输出结构化展示模型，而把最终自然语言组织交给 Claude？
+```
+
+这一项的第一阶段范围是：
+
+- `causal_enumeration`
+- `causal_lookup`
 
 ### 12.3 远期：分层迁移与平台升级
 
