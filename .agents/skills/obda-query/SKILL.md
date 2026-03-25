@@ -45,6 +45,7 @@ The following rules are mandatory when this skill is active:
 4. Use the bundled client script for server calls instead of ad-hoc `curl`.
 5. Do not invent predicates or rely on remembered schema from earlier turns.
 6. If the server exposes `/analysis/profiles`, consult it before using analyzer endpoints.
+7. If the user asks for root cause, path, hidden relations, or solution rationale, do one analyzer request before the final answer. Do not stop at factual SPARQL alone.
 
 If any of the above steps are skipped, the skill has not been followed correctly.
 
@@ -127,7 +128,8 @@ Identify what the user is asking:
 Decision rule:
 
 - Use `/sparql` first for factual, relational, and aggregate queries
-- Use `/analysis/...` only when the user explicitly wants path discovery, hidden relations, explanation, or neighborhood exploration
+- Use `/analysis/...` when the user explicitly wants path discovery, hidden relations, explanation, neighborhood exploration, root cause, or solution rationale
+- For solution-oriented questions, first use `/sparql` to identify the relevant entity set, then use `/analysis/...` or `/causal/{id}` once to justify why a strategy or event is connected
 - If `/analysis/profiles` exists, use it to discover supported analysis intents before calling analyzer
 - Use `/causal/{id}` only as a compatibility shortcut when generic analyzer endpoints are unavailable
 
@@ -169,6 +171,7 @@ Rules:
 - If schema does not expose the needed relation, say so explicitly instead of fabricating SPARQL
 - Prefer one consolidated query over many object-by-object probes
 - Do not start with `SELECT ?p ?o WHERE { <entity> ?p ?o }` unless a previous structured query failed
+- Do not treat a strategy lookup as causally explained until one analyzer request has confirmed the path or explicitly shown that no path is available
 
 ### Step 4: Execute Query
 
@@ -180,7 +183,10 @@ bash .agents/skills/obda-query/scripts/obda_api.sh sparql --query-file /tmp/quer
 
 Transform SPARQL results into natural language:
 - Summarize findings
-- Explain causal chains if relevant
+- Separate factual findings from causal/path explanation
+- If the question asks for a solution, explain whether the solution came from:
+  - a direct graph fact only, or
+  - an analyzer-confirmed path
 - Suggest related queries
 
 ## Server API Reference
@@ -238,6 +244,7 @@ Preferred approach:
 - if generic analyzer endpoints exist, use them first
 - if not, use `/causal/{id}` as a compatibility shortcut for customer-oriented cases
 - do not manually chase event -> workorder -> perception -> strategy with many separate probes if `/causal` or `/analysis/paths` can answer it
+- for "why" or "what solution and why" questions, analyzer use is mandatory before the final answer
 
 ### Generic Analyzer Request Pattern
 
@@ -259,6 +266,27 @@ Preferred request:
 bash .agents/skills/obda-query/scripts/obda_api.sh analysis-paths \
   --json '{"mode":"paths","profile":"causal","source":"http://ywyinfo.com/example-owl#customer_CUST004","target":"http://ywyinfo.com/example-owl#remediationstrategy_STR003","max_depth":4}'
 ```
+
+### Minimal Causal Answer Pattern
+
+For questions like:
+
+- `为什么客户会低满意度`
+- `有什么解决方案`
+- `这个策略为什么和该客户有关`
+
+Use this pattern:
+
+1. `/schema`
+2. one consolidated `/sparql` to identify the anchor customer, scores, events, or candidate strategies
+3. one analyzer request:
+   - `/analysis/paths` when generic analyzer exists
+   - otherwise `/causal/{customer_id}`
+4. final answer must include both:
+   - factual result
+   - causal/path evidence or an explicit statement that no path evidence was found
+
+Do not end the answer after step 2 for these question types.
 
 Fallback for today's simplest server:
 

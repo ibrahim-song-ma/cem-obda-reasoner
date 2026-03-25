@@ -35,10 +35,11 @@ Mandatory protocol:
 1. Fetch `/schema` first in the current turn.
 2. If filtering by phone, ID, score, status, or similar attributes, verify the property's domain.
 3. If schema alone is not enough, inspect `/sample/{class_name}` before finalizing SPARQL.
-4. Use `/analysis/...` only for path discovery, hidden relations, explanation, or neighborhood exploration.
+4. For root cause, "why", hidden relation, or solution questions, do one analyzer request before the final answer.
 5. Do not invent predicates from memory.
 6. For a normal user question, keep the server query budget to roughly 3 round-trips unless earlier results are empty or ambiguous.
 7. Do not start by probing a concrete entity with `SELECT ?p ?o`; prefer one structured query.
+8. Do not present a strategy or solution as causally justified unless `/analysis/...` or `/causal/{id}` has confirmed the path, or you explicitly say path evidence was not found.
 
 Preferred server clients:
 
