@@ -173,6 +173,11 @@ Windows PowerShell:
 
 这也是 `obda-query` skill 当前要求遵守的协议。
 
+一个重要约束：
+
+- 如果问题同时包含“原因约束”和“动作/状态约束”，主查询必须同时编码这两个条件
+- 例如 `因为网络问题，哪些客户投诉了？` 不能被偷偷放宽成“哪些客户有网络相关事件”
+
 ## Skill 与客户端
 
 仓库里已经包含本地 skill：
@@ -209,6 +214,108 @@ Windows PowerShell:
 .venv\Scripts\python.exe .agents\skills\obda-query\scripts\obda_api.py causal CUST004
 ```
 
+### `run` 工作流
+
+`run` 是当前推荐的多步执行入口，但要区分两种模式。
+
+可执行模式：
+
+```bash
+bash .agents/skills/obda-query/scripts/obda_api.sh run --json '{
+  "template": "causal_enumeration",
+  "sparql": {
+    "query": "PREFIX ex: <http://ywyinfo.com/example-owl#> SELECT ?customer ?event WHERE { ?customer a ex:customer ; ex:hasEvent ?event . } LIMIT 5"
+  },
+  "analysis": {
+    "kind": "paths-batch",
+    "payload": {
+      "mode": "paths",
+      "profile": "causal",
+      "sources": ["http://ywyinfo.com/example-owl#customer_CUST002"],
+      "max_depth": 3
+    }
+  }
+}'
+```
+
+规划模式：
+
+```bash
+bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪些客户投诉了？" --template causal_enumeration
+```
+
+说明：
+
+- 规划模式只返回 `schema + profiles + plan_skeleton`
+- 它不会自动替你生成最终 SPARQL，也不会直接执行查询
+- 真正执行时仍应使用 `run --json` 或 `run --json-file`
+- 为兼容 Agent 误用，`run "..." --json --template ...` 也会退化为同样的规划模式，但不建议依赖这种写法
+
+一个现实约束：
+
+- 当前 `run "自然语言问题" --template ...` 还不是“自然语言直达执行器”
+- 它的职责是返回规划骨架，而不是保证 Agent 一次性生成正确 SPARQL
+- 如果直接把自然语言问题丢给 Claude Code，再让它现场补全查询与 analyzer payload，仍可能出现多轮试探
+
+因此，想要最稳定行为时，应优先把执行计划显式化，而不是只给一个自然语言问题。
+
+### 最稳定执行方式
+
+如果目标是减少试错和 round-trip，推荐固定成下面的顺序：
+
+1. `schema`
+2. 一条主 SPARQL，返回最终答案所需字段，并至少带一列实体 URI
+3. 如需路径证据，再调用一次 `analysis-paths` 或 `analysis-paths-batch`
+4. 最终回答时明确区分“事实结果”和“路径解释”
+
+换句话说：
+
+- 自然语言 + planning mode，适合交互探索
+- 显式 `run --json`，适合稳定执行
+- 对于高频问题，最好沉淀为固定模板或 repo 级 profile，而不是每次让 Agent 临场生成
+
+### Analyzer 正确调用方式
+
+推荐：
+
+```bash
+bash .agents/skills/obda-query/scripts/obda_api.sh analysis-paths \
+  --json '{"mode":"paths","profile":"causal","source":"http://ywyinfo.com/example-owl#customer_CUST002","max_depth":3}'
+```
+
+批量路径：
+
+```bash
+bash .agents/skills/obda-query/scripts/obda_api.sh analysis-paths-batch \
+  --json '{"mode":"paths","profile":"causal","sources":["http://ywyinfo.com/example-owl#customer_CUST002","http://ywyinfo.com/example-owl#customer_CUST006"],"max_depth":3}'
+```
+
+不要这样做：
+
+- 手写 `curl ".../analysis/paths?from=...&to=..."`
+- 把类名当成 `source`
+- 用非客户 ID 调 `/causal/{customer_id}`
+
+当前约束：
+
+- `/analysis/paths` 的 GET 便利接口需要具体实体 URI，适合少量调试
+- 常规场景应优先使用 `POST /analysis/...` 的 JSON payload
+- `/causal/{customer_id}` 是兼容入口，只适用于 customer
+
+### 当前 CLI 兼容层
+
+为减少 Agent 的机械性试错，client 现在兼容一些常见误用：
+
+- `sample event 2`
+- `sparql 'PREFIX ... SELECT ...'`
+- `run "问题" --template ...`
+
+但推荐写法仍然是显式参数：
+
+- `sample event --limit 2`
+- `sparql --query 'PREFIX ...'`
+- `run --json '{...}'`
+
 ## SPARQL 示例
 
 ### 低满意度客户
@@ -236,6 +343,100 @@ WHERE {
 ```bash
 bash .agents/skills/obda-query/scripts/obda_api.sh causal CUST004
 ```
+
+## 常见排障
+
+### 1. 为什么一个问题会跑几分钟
+
+通常不是推理机慢，而是 Agent 在反复试错：
+
+- 先跑错误的 `run` 形式
+- 再用错误命名空间或错误谓词写 SPARQL
+- 再用 `/sample` 回头补 grounding
+- 再逐个实体调用 analyzer
+
+如果一个问题超过 3 到 4 个 server round-trip，通常已经偏离了推荐协议。
+
+### 2. `run` 返回 `planning_required`
+
+这说明你调用的是规划模式，而不是执行模式。
+
+处理方式：
+
+- 从返回的 `plan_skeleton` 出发补全 `sparql.query`
+- 必要时补全 `analysis.payload`
+- 再使用 `run --json`
+
+这不是报错，而是在明确告诉你：
+
+- 当前还没有进入实际查询阶段
+- 也还没有进入实际 analyzer 阶段
+- 如果后续让 Agent 自己把 skeleton 临场补全，它仍可能出现试探式查询
+
+### 3. Analyzer 报 `sources` 或 `source` 缺失
+
+这通常意味着：
+
+- 你调用了 `paths-batch` 却没有提供 `sources`
+- 或主 SPARQL 没有返回可用的 URI 锚点列
+
+当前 client 会尽量从 SPARQL 返回结果中自动提取 URI 列作为 `source/sources`，但前提是结果里确实存在 URI 变量。
+
+因此推荐：
+
+- `causal_lookup` 主查询至少返回一个实体 URI
+- `causal_enumeration` 主查询至少返回一列实体 URI，供 batch analyzer 自动提取
+
+### 4. 为什么结果会从“2 个客户”变成“3 个客户”
+
+通常是查询口径漂移，不是数据随机变化。
+
+常见漂移：
+
+- `网络投诉` 被放宽成 `网络相关事件`
+- `客户数` 和 `事件行数` 混用
+
+回答时应明确区分：
+
+- 匹配事件数
+- 去重后的实体数
+
+### 5. 什么时候该用 `/sample`
+
+`/sample` 只用于 grounding：
+
+- 确认实际 object property 是否真的被映射
+- 确认某个字段落在哪个类上
+- 确认 local name 是否与 schema 一致
+
+不要用 `/sample`：
+
+- 枚举最终结果集
+- 做统计
+- 推断“全量都有哪些”
+
+### 6. 为什么明明有 `run`，Claude Code 还是会反复试错
+
+因为目前系统里最不确定的一步，仍然是：
+
+- 从自然语言问题推导出正确 SPARQL
+- 决定 analyzer 用哪一种 payload
+- 决定 `source/sources` 该从哪一列 URI 提取
+
+这些决策如果仍由 Agent 在运行时临场补，就无法保证一次成功。
+
+当前项目已经做的缓解包括：
+
+- 兼容常见 CLI 误用
+- 在 batch analyzer 缺少 `sources` 时尽量自动从 SPARQL 结果提取 URI
+- 用 Skill 和 repo 规则约束查询顺序
+
+但这仍然不等于“确定性查询编译器”。
+
+如果后续要进一步压缩时延和试错次数，方向应该是：
+
+- 把高频问法沉淀为固定执行模板
+- 或实现真正的自然语言到执行计划的确定性 compiler
 
 ## 项目结构
 
