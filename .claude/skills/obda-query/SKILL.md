@@ -37,6 +37,32 @@ Do not hand-write raw `curl` requests unless both bundled clients are unavailabl
 For multi-step questions, prefer the single-entry `run` command over manually chaining low-level client calls.
 Before using `run`, choose the matching template for the user's question.
 
+## Skill Boundary
+
+This skill should remain thin.
+
+Its job is to:
+
+- fetch `schema` first
+- classify the question into the smallest route/template family
+- call `run` or one low-level structured command when appropriate
+- follow bounded recovery rules
+- write the final answer from `presentation` or structured results
+
+Its job is **not** to:
+
+- re-implement semantic grounding in prompt text
+- encode phrase-specific planner behavior
+- depend on one particular reroute, widening, or fallback strategy
+- invent ontology classes, properties, or semantic rewrites
+- emulate the planner by hand when question-mode already fits
+
+Responsibility split:
+
+- skill: routing discipline and protocol discipline
+- client/planner: semantic routing, grounding, request IR, node plan, lowering, validation, bounded fallback
+- server: schema, structured query execution, analysis execution
+
 ## Non-Negotiable Protocol
 
 The following rules are mandatory when this skill is active:
@@ -58,7 +84,7 @@ The following rules are mandatory when this skill is active:
 15. Do not call compatibility endpoints with the wrong entity type or identifier format. Verify the endpoint contract first.
 16. Do not infer "entity count" from row count, and do not infer row count from distinct entities. If the answer mentions both, compute both explicitly.
 17. If `/schema` already exposes the needed object property, do not inspect `/sample` just to rediscover the relation name.
-18. `run` executes only with `--json` or `--json-file`. If you call `run "<question>" --template ...`, treat the result as a planning bundle only, not as a final execution result.
+18. `run` supports both `--json/--json-file` and `run "<question>" --template ...`. Question form now routes through the semantic query planner and executes the locked plan automatically unless `--plan-only` is explicitly requested.
 19. Do not hand-write `GET /analysis/paths?...` query strings. Use `analysis-paths --json`, `analysis-paths-batch --json`, or `run --json`.
 20. When the user question contains both a cause constraint and an action/state constraint, encode both in the main structured query. Do not silently broaden `complained because of X` into `had any X-related event`.
 21. For `causal_lookup` and `causal_enumeration`, the execution order is fixed: main SPARQL first, analyzer second. If the main SPARQL returns zero rows, do not run analyzer.
@@ -221,9 +247,11 @@ Default routing:
 
 - simple one-shot fact question -> `fact_lookup`
 - list/summary/count question -> `enumeration`
+- one anchor entity + attribute/status/score check -> `fact_lookup` or `causal_lookup`, not `enumeration`
 - causal wording with one anchor entity -> `causal_lookup`
 - causal wording with a result set -> `causal_enumeration`
 - hidden/inferred relation question -> `hidden_relation`
+- a conditional suffix such as `如果有，有什么解决方案` does not by itself turn a one-anchor lookup into `causal_enumeration`
 
 Decision rule:
 
@@ -237,15 +265,34 @@ Runner rule:
 
 - If the question needs more than one step, use `run` with a chosen template
 - Execution form: `run --json '{...}'` or `run --json-file plan.json`
-- Recovery form only: `run "natural language question" --template <template>` returns a schema-first planning bundle; it does not generate SPARQL for you
+- Question form: `run "natural language question" --template <template>` now fetches schema first, routes the question through the semantic query planner, and executes the locked planner-selected plan automatically
+- Planning-only inspection is now explicit: `run "natural language question" --template <template> --plan-only`
+- Question form may narrow the requested template to a smaller effective template when the query family is clearer than the caller’s initial guess. Treat that rerouting as client behavior; do not depend on a particular hard-coded example in the skill
+- If this skill is launched with arguments that look like `run "question" --template ...`, prefer that exact question form or `run --json {"template":"...","question":"..."}`. Do not expand it into a hand-written builder or raw SPARQL on the first pass
+- If the question has one explicit anchor plus a status/score/ID-style predicate, do not force `causal_enumeration` just because the utterance has multiple clauses. Keep it on the smallest anchored lookup route and let the client narrow further if needed
+- When question form succeeds, treat its executed result as authoritative. Do not replace it with a fresh builder, a fabricated class name, or a wider raw SPARQL
+- For natural-language question form, never invent missing ontology classes such as `complaint` just because the user said “投诉”; the planner and validator own that grounding step
+- If a standard-template JSON plan contains both `question` and manual `sparql / analysis / samples`, the client will ignore those manual fields and force locked question-mode execution. Do not rely on mixing them
+- If question form performs any bounded fallback internally, treat that as opaque client behavior. It is not permission to start free exploration or to restate internal widening logic as part of the skill contract
 - For `causal_enumeration`, the default command sequence is `schema -> run`. Do not prepend `health`, generic `sample`, or ad-hoc low-level probes before the first `run`
 - For `causal_enumeration`, if you are about to inspect `sample` before the first `run`, stop. That means you are deviating from the fast path
+- For `causal_lookup` and `causal_enumeration`, prefer `sparql.builder` over free-form `sparql.query` whenever the query shape matches `source class -> evidence class -> filters`
+- For `causal_lookup` and `causal_enumeration`, when the builder shape is clearly `source class -> evidence class`, prefer omitting `link_property` and let the client infer it
+- For `causal_lookup` and `causal_enumeration`, if you still use raw `sparql.query`, set `sparql.source_var` explicitly so the client can validate and auto-derive analyzer anchors
+- `schema` now returns a compact `schema_summary` by default. Use `schema --full` only when you explicitly need the full ontology payload for debugging
 - `run` execution responses are compact by default: they return `schema_summary` / `profiles_summary` unless you explicitly request `include_schema: true` or `include_profiles: true`
+- `run` execution responses also compress analyzer output by default: they return summarized `analysis` unless you explicitly request `include_analysis: true`
+- Executed question-mode responses hide planner debug by default. If you explicitly need `planner_summary` / `planner_attempts`, inspect `--plan-only` or pass `include_planner_debug: true` in a JSON question plan
 - If SPARQL succeeds but analyzer cannot continue because no URI anchor is available, `run` may return `status: partial_success` plus `analysis_error`; inspect the main SPARQL result instead of treating it as a transport failure
 - For `causal_lookup` and `causal_enumeration`, if `run` returns a `presentation` field, use it as the primary input for the final answer. Treat raw `analysis.paths` as supporting evidence, not as the default user-facing wording
+- If `presentation.answer_contract` is available, follow its section order and field contract instead of improvising a new answer shape
+- If `presentation.answer_contract.count_contract` is available, obey it literally. For `哪些客户 ...` style questions, report `entity_count` as the customer count and never confuse it with `record_count`
 - If the question is a direct one-shot lookup, a single low-level command is still acceptable
 - Do not manually emulate `run` when a standard template already fits
 - For `causal_enumeration`, prefer `run` and do not replace the analyzer step with ad-hoc sample inspection
+- For `causal_lookup` and `causal_enumeration`, if you use `sparql.builder`, let the client validate class names, property names, and link direction before execution; that validation may use schema-declared object properties and runtime-mapped relations when available
+- That validation may also use runtime-mapped data properties from `mapping.yaml` when the ontology schema does not declare every queryable data field
+- When builder relation inference is possible, do not manually choose a schema-only semantic relation if the executable runtime mapping relation is enough
 - For `causal_enumeration`, the main SPARQL should return anchored rows such as `entity_id + evidence_anchor + evidence_type`, not only partial projections
 - For `causal_lookup` and `causal_enumeration`, treat `run` as query-first-then-analysis. Analyzer is a second stage, not a candidate finder
 
@@ -255,10 +302,29 @@ Failure rule:
 - A failed `schema` command does not by itself prove the reasoning server is down
 - Do not silently switch to a chain of raw `curl` commands and continue as if the protocol succeeded
 - If raw `curl` can reach `/schema` but `obda_api.sh` cannot, treat that as a client bug, not a server-down conclusion
+- If the planner form returns no executable candidate or low-confidence candidates, do not silently broaden the query. Refine one slot or ask for clarification instead of inventing a wider SPARQL
+- If question form returns `planning_required`, treat it as fail closed by default
+- If question form returns `planning_required` and there is no `recovery_hint`, stop. Do not issue manual `sparql`, `sample`, or exploratory chains in the same turn
+- If a one-anchor status/score question was forced through an enumeration template and comes back empty or misrouted, do not recover by sampling generic classes such as `customer`. Stop, or rerun once with the smaller anchored lookup template only if you are explicitly debugging the route choice
+- If `planning_required` also returns `clarification_hint.kind = explicit_metric_or_threshold_required`, do not use `/sample` or hand-written SPARQL to invent the missing semantic threshold yourself
+- In that case, do not silently rewrite the user's question into your own explicit-threshold variant such as turning `低满意度` into `满意度评分低于3分`
+- The explicit metric/threshold must come from the user's wording or from a planner-grounded numeric constraint already present in the response; if neither exists, stop and ask for a clearer restatement instead of probing data to pick one
+- If question-mode also returns `next_action = ask_user_for_clarification`, follow it literally: ask the user the clarification prompt and stop the investigation in the current turn
+- This is a hard stop: after `next_action = ask_user_for_clarification`, do not call `sample`, `sparql`, `run`, `causal`, `Read`, or `--plan-only` in the same turn
+- Do not inspect tool-result files to hunt for a workaround after `ask_user_for_clarification`; the next assistant message must be the clarification question itself
+- Do not restate or answer the original ontology question in the same turn after `ask_user_for_clarification`
+- If the user already asked an explicit anchored property question such as `13800138004的满意度评分是多少`, keep it on `fact_lookup`; do not switch to `/sample` first and do not hand-write a second factual SPARQL before trying question-mode
+- Only inspect the planner bundle in `--plan-only` mode or when explicitly debugging; do not treat a normal question-mode `planning_required` response as a partially completed plan that should be hand-finished
 - If the primary query is an enumeration, do not replace it with sample browsing after the first successful structured result
 - If `causal_enumeration` returns `status: empty_result`, stop and report no matches unless one targeted grounding sample is genuinely required to debug the schema
+- If `run` returns `recovery_hint`, follow it literally: one targeted sample at most, then rerun once
 - If `causal_enumeration` returns `status: partial_success`, inspect the structured SPARQL rows first. Only do one targeted grounding recovery if the missing analyzer input is caused by schema/query shape, then rerun once
 - If `presentation` is available, do not restate raw machine paths such as `entity_A --predicate--> entity_B` unless the user explicitly asks for raw path details
+- If the compact `analysis` summary is enough to answer the question, do not request `include_analysis: true` just to restate the same path evidence in a more verbose machine form
+- For `causal_enumeration`, default answer order is: summary sentence, compact entity table, grouped evidence details, brief causal confirmation
+- For `causal_enumeration`, do not mention `planner_attempts`, `execution_variant`, or raw path counts unless the user explicitly asks for debugging detail
+- For `causal_enumeration`, if the user asked “哪些客户 / 有几位客户”, the headline count must come from `presentation.summary.entity_count`, not the number of SPARQL rows
+- If the executed result exposes only structured evidence rows and compact analysis summaries, describe those directly. Do not speculate about planner-internal matching logic unless the response explicitly exposes it
 
 ### Analyzer Contract Roadmap
 

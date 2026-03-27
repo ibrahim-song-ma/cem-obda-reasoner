@@ -264,23 +264,125 @@ bash .agents/skills/obda-query/scripts/obda_api.sh run --json '{
 bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪些客户投诉了？" --template causal_enumeration
 ```
 
+仅调试 planner：
+
+```bash
+bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪些客户投诉了？" --template causal_enumeration --plan-only
+```
+
 说明：
 
-- 规划模式只返回 `schema + profiles + plan_skeleton`
-- 它不会自动替你生成最终 SPARQL，也不会直接执行查询
-- 真正执行时仍应使用 `run --json` 或 `run --json-file`
-- 为兼容 Agent 误用，`run "..." --json --template ...` 也会退化为同样的规划模式，但不建议依赖这种写法
+- 正常的 `QUESTION + --template` 会先取 `schema`，再把问句送入 `semantic query planner`，并自动执行锁定后的 `selected_plan`
+- 如果 planner 给不出高置信计划，才返回 `planning_required`
+- 只有显式传入 `--plan-only` 时，才返回 planner bundle，而不执行查询
+- planner 现在会先做 query family routing，并可能把请求模板收敛到更小的 `effective_template`
+- 对单锚点的状态/评分/属性判断题，即使外层误传成 `enumeration` / `causal_enumeration`，客户端也会优先收敛回 anchored lookup 路径；`如果有，有什么解决方案` 这类条件后缀不会把它自动变成结果集枚举
+- 为兼容 Agent 误用，`run "..." --json --template ...` 也会退化为同样的 question-mode
+- 同样地，如果有 Agent 误把 shorthand 包成 `run --json '{"template":"...","question":"..."}'`，客户端也会把它当成 question-mode 处理
+- 如果有 Agent 误把 `question` 和手写的 `sparql / analysis / samples` 混在同一个标准模板计划里，客户端现在会忽略这些手写字段，强制改走锁定后的 question-mode
+- 对自然语言 question-mode，不要再自行补写 `sparql.builder` 或 raw `sparql.query`；应直接使用客户端锁定后的 planner 计划
+- question-mode 的 reroute、fallback、widening 都属于客户端内部实现；调用方不应依赖某个具体问法的特定策略
+- 对当前 planner 还不支持的 anchored family，question-mode 会返回 `planning_required`，而不是假装已有稳定能力
+- `schema` 命令现在默认只返回 `schema_summary`；只有显式传 `schema --full` 时才返回整份本体
 - 执行模式下，`run` 默认只返回 `schema_summary` / `profiles_summary`，避免整份 schema 输出过大而被截断
 - 如果你确实需要完整块，可在计划里显式传入 `include_schema: true` 或 `include_profiles: true`
+- 执行模式下，`run` 默认只返回压缩后的 `analysis` 摘要；只有显式传入 `include_analysis: true` 时才返回完整原始 analyzer 路径
+- 执行后的 question-mode 默认不再返回 `planner_summary` / `planner_attempts` / `execution_variant` 这类调试字段；需要调 planner 时优先使用 `--plan-only`
+- 对 `causal_lookup` / `causal_enumeration`，现在优先建议使用 `sparql.builder` 而不是自由书写整条 `sparql.query`
+- `sparql.builder` 会在执行前做 schema 约束校验，包括：
+  - class / property 是否存在
+  - link property 的 domain / range 方向是否匹配
+  - 当 ontology schema 未显式声明某个对象关系、但 `mapping.yaml` 已将它映射到运行时图中时，builder 也会参考运行时映射关系做方向校验
+  - `source_var` 是否可作为 analyzer 锚点列
+- 对 `causal_lookup` / `causal_enumeration`，如果 builder 的 query shape 是明确的 `source_class -> evidence_class`，优先省略 `link_property`，让客户端自动推断
+- 自动推断时，客户端会优先选择运行时可执行的 mapping 关系，其次才是 ontology schema 声明关系；若仍有多个候选，再要求显式指定
+- 当 ontology schema 未完整声明某些 data property、但 `mapping.yaml` 已映射到运行时图中时，planner / builder / raw-query validator 现在也会参考运行时 data property catalog；例如 `customerbehavior_满意度评分`、`customerbehavior_服务体验评分` 这类字段
+- 对 `causal_lookup` / `causal_enumeration`，如果你仍使用自由书写的 `sparql.query`，现在必须显式提供 `sparql.source_var`
 - 如果主 SPARQL 已成功、但 analyzer 因缺少 URI 锚点无法继续，`run` 会返回 `status: partial_success` 和 `analysis_error`，而不是整条命令失败
 - 对 `causal_lookup` / `causal_enumeration`，当前固定为“先查询，后分析”；主查询 `0` 行时不会继续 analyzer，而是返回 `status: empty_result`
+- 对 `causal_lookup` / `causal_enumeration`，当主查询 `0` 行时，返回体还会附带 `recovery_hint`，把恢复路径收敛到“一次定向 grounding + 一次 rerun”
 - 对 `causal_lookup` / `causal_enumeration`，`run` 还会额外返回 `presentation` 字段：这是结构化展示模型，不是最终中文话术
-- `presentation` 优先提供人类可读字段与分组摘要，原始 `sparql` / `analysis` 仍然保留用于审计和追踪
+- `presentation` 优先提供人类可读字段与分组摘要；原始 `sparql` 保留用于审计，原始 `analysis` 默认会被压缩成摘要以避免重复路径占用过多 token
+- 对 `causal_lookup` / `causal_enumeration`，`presentation` 现在还会返回 `answer_contract`，用于约束最终答案的段落顺序和表格/明细结构，减少大模型自由发挥带来的输出漂移
+- 从 Agent/Skill 边界看，`run` 应被当成“薄调用入口”。具体的 semantic routing、grounding、plan construction、lowering 和 bounded fallback 属于 client/planner 内部职责，而不是 skill 文案层要复刻的逻辑
 
 一个现实约束：
 
-- 当前 `run "自然语言问题" --template ...` 还不是“自然语言直达执行器”
-- 它的职责是返回规划骨架，而不是保证 Agent 一次性生成正确 SPARQL
+- 当前 `run "自然语言问题" --template ...` 已经是 question-mode 自动执行入口；只有显式 `--plan-only` 时才只看 planner bundle
+- planner 的目标仍然是“高置信就执行，低置信就停”，而不是自动退化成开放探索链
+
+### 问句回归套件
+
+仓库现在包含一套 repo 级的自然语言问句回归：
+
+- 套件文件：
+  [`tests/obda_question_regressions.json`](tests/obda_question_regressions.json)
+- 主执行器：
+  [`tests/run_question_regressions.sh`](tests/run_question_regressions.sh)
+- 断言/辅助工具：
+  [`tests/run_question_regressions.py`](tests/run_question_regressions.py)
+
+用途：
+
+- 固化当前已支持的主路径
+- 固化当前故意 `fail closed` 的路径
+- 避免每次改 planner / grounding / lowering 后把旧行为打坏
+
+运行方式：
+
+```bash
+bash tests/run_question_regressions.sh
+```
+
+只跑单个 case：
+
+```bash
+bash tests/run_question_regressions.sh causal_enumeration_network_complaints_run
+```
+
+当前套件覆盖了几类代表性问句：
+
+- `因为网络问题，哪些客户投诉了？`
+- `13800138004是否存在满意度评分低于3的情况`
+- `13800138004是否存在满意度评分低于3的情况?如果有，有什么解决方案`
+- `13800138004是否存在满意度评分低于3的情况?如果有，原因是什么？如果有，有什么解决方案`
+- `13800138004是否存在满意度评分低于3的情况?如果有，这个客户有什么解决方案`
+- `13800138004是否存在满意度评分低于3的情况?如果有，13800138002有什么解决方案`
+- `13800138003是否存在满意度评分低于3的情况?如果没有，这个客户有什么解决方案`
+- `13800138004是否存在低满意度情况?如果有，有什么解决方案`
+- `因为网络问题，哪些客户投诉了？这些客户的投诉原因分别是什么？`
+- `引发投诉的都有什么原因`
+
+说明：
+
+- 套件现在同时覆盖：
+  - 单问题 `question-template`
+  - 多子问题 `question-batch-template`
+  - 解释型枚举的 generic reroute
+    - `causal_enumeration -> explanation_enumeration -> enumeration`
+  - planner 在缺少显式 `Intent IR` 时会先合成单 unit `Intent IR`
+    - `routing` / `intent policy` 优先消费 `Intent IR`
+    - raw slot 仅作为 bootstrap fallback
+  - 条件性 follow-up 的 `Execution DAG` 跳过逻辑
+  - 显式新锚点覆盖旧上下文
+    - 只保留依赖条件，不继承上一题的语义约束
+  - 负条件分支
+    - `empty_or_false` 只继承焦点，不继承前一步成立时才有意义的状态约束
+  - 执行期 `resolved references`
+    - 单实体引用：`这个客户`
+    - 结果集引用：`这些客户` / `分别`
+- 新的 batch 主线要求：
+  - `状态判断 -> 如果有 -> 解决方案`
+  - 必须拆成 `QuestionUnit[]`
+  - 并保持 `planner_suggested / batch_executed / planning_required / skipped` 这些状态稳定
+
+- 默认 runner 只执行当前已验证稳定的 case
+- `causal_enumeration_network_complaints_run` 这条自动执行 case 仍保留在 suite 里，但暂时作为手动扩展 case，不纳入默认基线
+
+要求：
+
+- 每次修改 `obda_api.py` 中的 planner、slot binding、lowering、question-mode 执行器后，都要先跑这套回归
+- 如果某个 case 的“应答成功 / 应答失败”语义边界被设计性调整，必须同步更新套件和 README，而不是只改代码
 
 ### `presentation` 的定位
 
@@ -301,6 +403,63 @@ bash .agents/skills/obda-query/scripts/obda_api.sh run "因为网络问题，哪
 
 - Claude 组织最终回答时，优先读 `presentation`
 - 只有在需要调试、审计或深挖路径时，再回头读原始 `analysis.paths`
+
+### `sparql.builder` 示例
+
+对于因果模板，推荐使用结构化 builder：
+
+```bash
+bash .agents/skills/obda-query/scripts/obda_api.sh run --json '{
+  "template": "causal_enumeration",
+  "sparql": {
+    "source_var": "customer",
+    "builder": {
+      "source_class": "customer",
+      "source_var": "customer",
+      "evidence_class": "event",
+      "evidence_var": "event",
+      "link_property": "hasEvent",
+      "select": [
+        {"var": "customer", "kind": "uri"},
+        {"var": "customerName", "subject": "source", "property": "customer_姓名"},
+        {"var": "customerId", "subject": "source", "property": "customer_客户ID"},
+        {"var": "event", "kind": "uri"},
+        {"var": "eventId", "subject": "evidence", "property": "event_event_id"},
+        {"var": "eventType", "subject": "evidence", "property": "event_事件类型"},
+        {"var": "eventDesc", "subject": "evidence", "property": "event_事件描述"}
+      ],
+      "filters": [
+        {"var": "eventType", "op": "contains_any", "values": ["网络", "宽带"]},
+        {"var": "eventDesc", "op": "contains_any", "values": ["网络", "信号", "宽带"]}
+      ],
+      "distinct": true,
+      "order_by": ["customerId", "eventId"]
+    }
+  },
+  "analysis": {
+    "kind": "paths-batch",
+    "payload": {"mode": "paths", "profile": "causal", "max_depth": 3}
+  }
+}'
+```
+
+当前 builder 第一阶段支持的能力：
+
+- `source_class` / `evidence_class`
+- `link_property` 自动方向校验
+  - 优先参考 `/schema` 的 object property 声明
+  - 如果 schema 未声明、但 `mapping.yaml` 已映射为运行时关系，也会继续校验
+  - 如果未显式提供 `link_property`，客户端会优先选择运行时映射中的 `source -> evidence` 正向关系
+- `select`
+- `filters`
+  - `contains`
+  - `contains_any`
+  - `contains_all`
+  - `equals`
+  - `in`
+- `distinct`
+- `order_by`
+- `limit`
 
 ### 当前推荐的最短线路
 
@@ -436,19 +595,25 @@ bash .agents/skills/obda-query/scripts/obda_api.sh causal CUST004
 
 ### 2. `run` 返回 `planning_required`
 
-这说明你调用的是规划模式，而不是执行模式。
+这说明 question-mode 已经进入 planner，但当前 planner 还没有产出高置信、可执行的锁定计划。
 
 处理方式：
 
-- 从返回的 `plan_skeleton` 出发补全 `sparql.query`
-- 必要时补全 `analysis.payload`
-- 再使用 `run --json`
+- 先看返回的 `request_ir` / planner bundle，确认 query family、anchors 和约束是否被正确识别
+- 仅当返回里明确带有 `recovery_hint` 时，才允许做一次有界 grounding 恢复，再重新调用 `run`
+- 如果没有 `recovery_hint`，就应 fail closed：停止、报告 planner 当前不支持或需澄清；不要切到手工 `sparql/sample` 探索链
+- 如果 `clarification_hint.kind = explicit_metric_or_threshold_required`，不要自行把抽象状态词改写成你猜测的显式阈值问句，例如把“低满意度”擅自改写成“满意度评分低于3分”
+- 这种显式 metric/threshold 只能来自用户原问题，或来自 planner 已经成功抽取出的 numeric constraint；否则就应该停下并请求更明确的表述
+- 如果同时返回 `next_action = ask_user_for_clarification`，就按该契约执行：直接向用户发澄清问题，并在当前轮停止调查，不要再切到 `/sample`、手写 `sparql` 或自行改写后的 `run`
+- 对 `13800138004的满意度评分是多少` 这类锚点 + 显式属性查值问题，question-mode 现在可直接走 `fact_lookup -> anchored_fact_lookup`，不需要外层 agent 再手工补一条事实查询
+- 不要把 `planning_required` 当成“让 Agent 现场补完整个 `sparql.query` / `analysis.payload`”的信号
 
 这不是报错，而是在明确告诉你：
 
-- 当前还没有进入实际查询阶段
+- 当前还没有进入实际主查询执行阶段
 - 也还没有进入实际 analyzer 阶段
-- 如果后续让 Agent 自己把 skeleton 临场补全，它仍可能出现试探式查询
+- 当前这个 family 还没有被 planner 通用支持，或者 grounding 置信度不足
+- 正确处理方式是 fail closed 或一次受限恢复，而不是退化成自由探索链
 
 ### 3. Analyzer 报 `sources` 或 `source` 缺失
 

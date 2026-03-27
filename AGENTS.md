@@ -29,6 +29,9 @@ For ontology/data questions, use the `obda-query` skill:
 
 - skill file:
   `/Users/Song/code/cc/reasoner/.agents/skills/obda-query/SKILL.md`
+- exact skill name for Claude Code is `obda-query`
+- do not invoke it as `:obda-query`
+- do not emit `Skill(:obda-query)`; if you need to reference the skill by name, use `obda-query` exactly
 
 Boundary rule:
 
@@ -49,7 +52,7 @@ Mandatory protocol:
 11. For multi-step investigation, prefer the bundled `run` workflow instead of manually chaining low-level client calls.
 12. Do not force all questions through one fixed path. First classify the question, then choose the smallest matching template such as `fact_lookup`, `enumeration`, `causal_lookup`, `causal_enumeration`, or `hidden_relation`.
 13. Do not call legacy/non-existent endpoints such as `/analysis/causal` or `/analyzer`. Use `/analysis/paths*` and related analyzer endpoints, or `/causal/{id}`.
-14. For `因为...哪些... / 哪些客户因为... / 哪些问题导致...` style questions, prefer `run --json` with template `causal_enumeration` instead of hand-built query chains. The shorthand form `run "<question>" --template ...` is planning-only.
+14. For `因为...哪些... / 哪些客户因为... / 哪些问题导致...` style questions, prefer `run --json` with template `causal_enumeration` instead of hand-built query chains. The shorthand form `run "<question>" --template ...` now routes through the semantic query planner and executes the locked plan automatically unless `--plan-only` is explicitly requested.
 15. Do not call `/causal/{id}` with non-customer IDs, do not hand-write `GET /analysis/paths?...` query strings, and do not confuse event-row counts with distinct customer counts.
 16. A failed client command does not by itself prove the local reasoning server is down; distinguish transport/client failures from server availability.
 
@@ -72,6 +75,7 @@ Hard requirements:
 3. Do not invent columns.
 4. Prefer relationship construction in `mapping.yaml`, not application code.
 5. Keep `/sample` available; it is part of the querying workflow, not disposable debug code.
+6. After changing planner/question-mode/grounding/lowering behavior in `.agents/skills/obda-query/scripts/obda_api.py`, run `bash tests/run_question_regressions.sh` and keep the suite green.
 
 Project schema facts that must not be guessed:
 

@@ -1,0 +1,1004 @@
+{
+  "suite_name": "obda_question_regressions",
+  "suite_version": 4,
+  "cases": [
+    {
+      "id": "causal_enumeration_network_complaints_plan",
+      "description": "因果枚举主路径必须能给出可执行锁定计划。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "因为网络问题，哪些客户投诉了？",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "plan_executable",
+          "equals": true
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.source_class",
+          "equals": "customer"
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.evidence_class",
+          "equals": "event"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_network_complaints_run",
+      "enabled": false,
+      "description": "因果枚举自动执行应稳定返回 3 位客户、4 条记录。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "因为网络问题，哪些客户投诉了？"
+      },
+      "assertions": [
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "presentation.summary.entity_count",
+          "equals": 3
+        },
+        {
+          "path": "presentation.summary.record_count",
+          "equals": 4
+        }
+      ]
+    },
+    {
+      "id": "anchored_numeric_status_single_run",
+      "description": "单问题显式数值约束仍应走旧的 anchored causal lookup 主线。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "sparql.count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "presentation.facts[0].display_id",
+          "equals": "BEH004"
+        },
+        {
+          "path": "presentation.key_metrics[0].field",
+          "equals": "statusMetric"
+        },
+        {
+          "path": "presentation.key_metrics[0].value",
+          "approx": 2.8,
+          "tolerance": 0.01
+        }
+      ]
+    },
+    {
+      "id": "anchored_numeric_status_single_run_second_customer",
+      "description": "单问题显式数值约束的第二个稳定样本也应可执行。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138002是否存在满意度评分低于3的情况"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "sparql.count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.entity.display_id",
+          "equals": "CUST002"
+        },
+        {
+          "path": "presentation.facts[0].display_id",
+          "equals": "BEH002"
+        },
+        {
+          "path": "presentation.key_metrics[0].field",
+          "equals": "statusMetric"
+        },
+        {
+          "path": "presentation.key_metrics[0].value",
+          "approx": 2.5,
+          "tolerance": 0.01
+        }
+      ]
+    },
+    {
+      "id": "anchored_numeric_status_single_run_word_order_variant",
+      "description": "显式数值约束的中文语序变体和数值单位后缀也应可执行。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004的满意度评分是否低于3分"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "sparql.count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "presentation.facts[0].display_id",
+          "equals": "BEH004"
+        },
+        {
+          "path": "presentation.key_metrics[0].value",
+          "approx": 2.8,
+          "tolerance": 0.01
+        }
+      ]
+    },
+    {
+      "id": "anchored_fact_lookup_metric_value_run",
+      "description": "锚点 + 显式属性查询应走 anchored_fact_lookup，而不是继续 planning_required。",
+      "payload": {
+        "template": "fact_lookup",
+        "question": "13800138004的满意度评分是多少"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "fact_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_fact_lookup"
+        },
+        {
+          "path": "sparql.count",
+          "equals": 1
+        },
+        {
+          "path": "sparql.results[0].evidenceTargetValue",
+          "approx": 2.8,
+          "tolerance": 0.01
+        }
+      ]
+    },
+    {
+      "id": "batch_numeric_status_solution_plan",
+      "description": "多子问题输入应拆成 QuestionUnit DAG，并继承数值约束到条件性 follow-up。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_planner_suggested"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[1].dependency.condition",
+          "equals": "non_empty_or_true"
+        },
+        {
+          "path": "question_units[1].resolved_slots.bootstrap_signals.asks_solution",
+          "equals": true
+        },
+        {
+          "path": "question_units[1].resolved_slots.status_numeric_constraint.value",
+          "equals": 3
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "execution_dag.edges[0].condition",
+          "equals": "non_empty_or_true"
+        },
+        {
+          "path": "presentation.summary.unit_count",
+          "equals": 2
+        }
+      ]
+    },
+    {
+      "id": "batch_numeric_status_solution_run",
+      "description": "状态判断 + 条件性方案应按 DAG 顺序执行，并输出结构化多答案。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[0].response.presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "question_units[1].response.presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "question_units[1].response.presentation.facts[0].display_id",
+          "equals": "BEH004"
+        },
+        {
+          "path": "conversation_state.units[0].focus.entity_ids[0]",
+          "equals": "CUST004"
+        },
+        {
+          "path": "question_units[1].intent_ir.references.resolved.from_unit_id",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[1].intent_ir.references.resolved.entity_class",
+          "equals": "customer"
+        },
+        {
+          "path": "presentation.summary.executed_count",
+          "equals": 2
+        }
+      ]
+    },
+    {
+      "id": "batch_numeric_status_solution_run_variant_have_or_not",
+      "description": "同结构改写应仍走同一条 batch + Intent IR 主线，并保留 bootstrap candidate 到 Intent IR 的映射。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004有无满意度评分低于3的情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].resolved_slots.bootstrap_candidates.status_or_problem_text[0].source",
+          "equals": "question_numeric_attribute"
+        },
+        {
+          "path": "question_units[0].intent_ir.operators[0]",
+          "equals": "status_check"
+        },
+        {
+          "path": "question_units[0].intent_ir.constraints[0].slot",
+          "equals": "status_or_problem_text"
+        },
+        {
+          "path": "question_units[0].intent_ir.constraints[0].text",
+          "equals": "满意度评分"
+        },
+        {
+          "path": "question_units[1].intent_ir.operators[1]",
+          "equals": "remediation"
+        },
+        {
+          "path": "question_units[1].response.query_family",
+          "equals": "anchored_causal_lookup"
+        }
+      ]
+    },
+    {
+      "id": "batch_numeric_status_reason_solution_run",
+      "description": "三段式条件 DAG 应稳定执行状态判断、原因解释和解决方案三个子问题。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，原因是什么？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[2].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[1].response.presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "question_units[2].response.presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "question_units[1].intent_ir.references.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[2].intent_ir.references.depends_on",
+          "equals": "q2"
+        },
+        {
+          "path": "presentation.summary.executed_count",
+          "equals": 3
+        }
+      ]
+    },
+    {
+      "id": "batch_explicit_entity_reference_solution_run",
+      "description": "显式这个/该客户类引用应在执行期解析成结构化 reference，并保持 follow-up 可执行。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，这个客户有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[1].reference_markers[0]",
+          "equals": "这个"
+        },
+        {
+          "path": "question_units[1].resolved_slots.reference_from_unit_id",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[1].resolved_slots.reference_entity_class",
+          "equals": "customer"
+        },
+        {
+          "path": "question_units[1].resolved_slots.reference_entity_ids[0]",
+          "equals": "CUST004"
+        },
+        {
+          "path": "question_units[1].intent_ir.references.resolved.entity_uris[0]",
+          "equals": "http://ywyinfo.com/example-owl#customer_CUST004"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "ok"
+        }
+      ]
+    },
+    {
+      "id": "batch_numeric_status_empty_followup_skipped",
+      "description": "状态判断为空时，条件性方案 follow-up 必须被 DAG 稳定跳过。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138003是否存在满意度评分低于3的情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "empty_result"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "skipped"
+        },
+        {
+          "path": "question_units[1].response.blocked_reason.reason",
+          "equals": "dependency_condition_not_met"
+        },
+        {
+          "path": "presentation.summary.executed_count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.summary.blocked_count",
+          "equals": 1
+        }
+      ]
+    },
+    {
+      "id": "batch_negative_branch_drops_positive_constraint",
+      "description": "否定条件分支只继承焦点，不应继承前一步的正向状态约束。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138003是否存在满意度评分低于3的情况？如果没有，这个客户有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "empty_result"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[1].resolved_slots.inherited_context_keys[0]",
+          "equals": "anchors"
+        },
+        {
+          "path": "question_units[1].response.planner.reason",
+          "equals": "no_executable_candidate_plan"
+        },
+        {
+          "path": "presentation.summary.executed_count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.summary.planning_required_count",
+          "equals": 1
+        }
+      ]
+    },
+    {
+      "id": "batch_explicit_anchor_overrides_context_run",
+      "description": "后续 unit 显式给出新锚点时，应只保留依赖条件，不继承上一题的语义约束或引用绑定。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，13800138002有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[1].resolved_slots.has_explicit_anchor",
+          "equals": true
+        },
+        {
+          "path": "question_units[1].resolved_slots.anchors[0].value",
+          "equals": "13800138002"
+        },
+        {
+          "path": "question_units[1].resolved_slots.status_numeric_constraint",
+          "equals": null
+        },
+        {
+          "path": "question_units[1].resolved_slots.bootstrap_signals.status_check_requested",
+          "equals": false
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[1].response.planner.reason",
+          "equals": "no_executable_candidate_plan"
+        },
+        {
+          "path": "presentation.summary.planning_required_count",
+          "equals": 1
+        }
+      ]
+    },
+    {
+      "id": "batch_result_set_reference_followup_run",
+      "description": "这些/分别 这类结果集引用应解析到上一轮实体集合，并保留结构化 conversation state。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "因为网络问题，哪些客户投诉了？这些客户的投诉原因分别是什么？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "question_units[0].intent_ir.focus.kind",
+          "equals": "result_set"
+        },
+        {
+          "path": "question_units[1].reference_markers[0]",
+          "equals": "这些"
+        },
+        {
+          "path": "question_units[1].reference_markers[1]",
+          "equals": "分别"
+        },
+        {
+          "path": "question_units[1].resolved_slots.reference_from_unit_id",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[1].resolved_slots.reference_entity_class",
+          "equals": "customer"
+        },
+        {
+          "path": "question_units[1].resolved_slots.reference_entity_ids[2]",
+          "equals": "CUST006"
+        },
+        {
+          "path": "question_units[1].intent_ir.references.resolved.grain",
+          "equals": "entity_set"
+        },
+        {
+          "path": "question_units[1].intent_ir.focus.kind",
+          "equals": "previous_result_reference"
+        },
+        {
+          "path": "question_units[1].response.effective_template",
+          "equals": "enumeration"
+        },
+        {
+          "path": "question_units[1].response.query_family",
+          "equals": "explanation_enumeration"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "ok"
+        },
+        {
+          "path": "conversation_state.units[0].focus.entity_uris[1]",
+          "equals": "http://ywyinfo.com/example-owl#customer_CUST004"
+        }
+      ]
+    },
+    {
+      "id": "batch_abstract_status_wrong_template_corrected",
+      "description": "单锚点抽象状态题即使误传 causal_enumeration，也必须收敛回 anchored lookup 并诚实失败。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "13800138004是否存在低满意度情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.effective_template",
+          "equals": "causal_lookup"
+        },
+        {
+          "path": "question_units[0].response.query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "question_units[0].response.clarification_hint.kind",
+          "equals": "explicit_metric_or_threshold_required"
+        },
+        {
+          "path": "question_units[0].response.next_action",
+          "equals": "ask_user_for_clarification"
+        },
+        {
+          "path": "question_units[0].response.recovery_policy.requires_user_clarification",
+          "equals": true
+        },
+        {
+          "path": "question_units[0].response.manual_fallback_allowed",
+          "equals": false
+        },
+        {
+          "path": "question_units[0].response.recovery_hint",
+          "absent": true
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "skipped"
+        },
+        {
+          "path": "question_units[1].response.query_family",
+          "equals": "anchored_causal_lookup"
+        }
+      ]
+    },
+    {
+      "id": "batch_abstract_status_fail_closed_plan",
+      "description": "抽象状态词没有通用 lowering 时，多子问题 planning-only 必须整体诚实 fail closed。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在低满意度情况？如果有，有什么解决方案？",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.planner.reason",
+          "equals": "constraint_grounding_not_executable"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[1].response.planner.reason",
+          "equals": "constraint_grounding_not_executable"
+        },
+        {
+          "path": "presentation.summary.planning_required_count",
+          "equals": 2
+        }
+      ]
+    },
+    {
+      "id": "batch_abstract_status_execute_fail_closed",
+      "description": "抽象状态词执行期也必须诚实失败，并跳过条件性方案 follow-up。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在低满意度情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "next_action",
+          "equals": "ask_user_for_clarification"
+        },
+        {
+          "path": "clarification_hint.kind",
+          "equals": "explicit_metric_or_threshold_required"
+        },
+        {
+          "path": "recovery_policy.requires_user_clarification",
+          "equals": true
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.clarification_hint.kind",
+          "equals": "explicit_metric_or_threshold_required"
+        },
+        {
+          "path": "question_units[0].response.next_action",
+          "equals": "ask_user_for_clarification"
+        },
+        {
+          "path": "question_units[0].response.manual_fallback_allowed",
+          "equals": false
+        },
+        {
+          "path": "question_units[0].response.plan_skeleton",
+          "absent": true
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "skipped"
+        },
+        {
+          "path": "question_units[1].response.query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "question_units[1].response.blocked_reason.reason",
+          "equals": "dependency_condition_not_met"
+        },
+        {
+          "path": "presentation.summary.blocked_count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.summary.planning_required_count",
+          "equals": 1
+        }
+      ]
+    },
+    {
+      "id": "anchored_solution_only_fail_closed",
+      "description": "只有锚点和方案请求、没有可执行约束时，必须诚实失败。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004有什么解决方案",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "plan_executable",
+          "equals": false
+        },
+        {
+          "path": "planner.reason",
+          "equals": "no_executable_candidate_plan"
+        }
+      ]
+    },
+    {
+      "id": "explanation_enumeration_wrong_template_plan",
+      "description": "解释型枚举应先从更大的模板收敛到 explanation_enumeration，再给出可执行锁定计划。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "引发投诉的都有什么原因",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "requested_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "effective_template",
+          "equals": "enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "explanation_enumeration"
+        },
+        {
+          "path": "plan_executable",
+          "equals": true
+        },
+        {
+          "path": "planner.request_ir.constraints[0].raw_text",
+          "equals": "投诉"
+        }
+      ]
+    },
+    {
+      "id": "explanation_enumeration_wrong_template_run",
+      "description": "解释型枚举实际执行时，应返回投诉相关原因集合而不是 fail closed。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "引发投诉的都有什么原因"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "requested_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "effective_template",
+          "equals": "enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "explanation_enumeration"
+        },
+        {
+          "path": "presentation.summary.value_count",
+          "equals": 6
+        },
+        {
+          "path": "presentation.items[0].value_label",
+          "equals": "5G网络问题"
+        },
+        {
+          "path": "presentation.items[5].value_label",
+          "equals": "资费争议"
+        }
+      ]
+    },
+    {
+      "id": "explanation_enumeration_direct_run",
+      "description": "直接使用 enumeration 提问解释型枚举问题时，也应稳定命中 explanation_enumeration。",
+      "payload": {
+        "template": "enumeration",
+        "question": "引发投诉的都有什么原因"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "explanation_enumeration"
+        },
+        {
+          "path": "presentation.summary.value_count",
+          "equals": 6
+        },
+        {
+          "path": "presentation.items[2].value_label",
+          "equals": "服务投诉"
+        }
+      ]
+    }
+  ]
+}
