@@ -1,6 +1,6 @@
 {
   "suite_name": "obda_question_regressions",
-  "suite_version": 4,
+  "suite_version": 7,
   "cases": [
     {
       "id": "causal_enumeration_network_complaints_plan",
@@ -38,6 +38,217 @@
         {
           "path": "plan_skeleton.sparql.builder.evidence_class",
           "equals": "event"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_5g_signal_complaints_plan",
+      "description": "口语化 5G 信号差类因果枚举应形成 event-text 驱动的可执行计划，而不是退回 planning_required/时间列匹配。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为5G信号差而投诉了?",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "plan_executable",
+          "equals": true
+        },
+        {
+          "path": "planner.request_ir.grounded_constraints.cause_text.effective_text",
+          "equals": "5G信号不稳定"
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.select[4].property",
+          "equals": "event_事件描述"
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.filters[0].any_of[0].values[0]",
+          "equals": "5G信号不稳定"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_5g_signal_complaints_run",
+      "description": "口语化 5G 信号差类因果枚举应直接命中 customer->event 主链并返回稳定结果。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为5G信号差而投诉了?"
+      },
+      "assertions": [
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "presentation.summary.entity_count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.summary.record_count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.groups[0].entity.display_id",
+          "equals": "CUST006"
+        },
+        {
+          "path": "presentation.groups[0].evidence[0].display_id",
+          "equals": "EVT007"
+        },
+        {
+          "path": "presentation.groups[0].evidence[0].display_description",
+          "equals": "5G信号不稳定"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_signal_complaints_plan",
+      "description": "更泛的信号差口语表达应通过 sample recall 进入 event 文本过滤，而不是退回空绑定。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为信号差而投诉了?",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "plan_executable",
+          "equals": true
+        },
+        {
+          "path": "planner.request_ir.grounded_constraints.cause_text.has_binding",
+          "equals": true
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.select[4].property",
+          "equals": "event_事件描述"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_signal_complaints_run",
+      "description": "更泛的信号差口语表达应命中至少信号弱/5G 信号不稳定相关投诉客户。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为信号差而投诉了?"
+      },
+      "assertions": [
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "presentation.summary.entity_count",
+          "equals": 2
+        },
+        {
+          "path": "presentation.summary.record_count",
+          "equals": 2
+        },
+        {
+          "path": "presentation.groups[0].entity.display_id",
+          "equals": "CUST002"
+        },
+        {
+          "path": "presentation.groups[1].entity.display_id",
+          "equals": "CUST006"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_network_bad_complaints_plan",
+      "description": "抽象口语症状“网络不好”应避开 key-like 属性误绑，并形成 event-text 驱动的可执行计划。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为网络不好而投诉了?",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "plan_executable",
+          "equals": true
+        },
+        {
+          "path": "planner.request_ir.grounded_constraints.cause_text.top_node_type",
+          "equals": "value"
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.filters[0].any_of[0].values[0]",
+          "equals": "5G网络问题"
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.filters[0].any_of[0].values[2]",
+          "equals": "网络覆盖问题"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_network_bad_complaints_run",
+      "description": "抽象口语症状“网络不好”应稳定覆盖网络质量投诉/覆盖问题/5G网络问题相关客户。",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为网络不好而投诉了?"
+      },
+      "assertions": [
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "presentation.summary.entity_count",
+          "equals": 2
+        },
+        {
+          "path": "presentation.summary.record_count",
+          "equals": 3
+        },
+        {
+          "path": "presentation.groups[0].entity.display_id",
+          "equals": "CUST002"
+        },
+        {
+          "path": "presentation.groups[0].evidence[0].display_id",
+          "equals": "EVT001"
+        },
+        {
+          "path": "presentation.groups[0].evidence[1].display_id",
+          "equals": "EVT003"
+        },
+        {
+          "path": "presentation.groups[1].entity.display_id",
+          "equals": "CUST006"
+        },
+        {
+          "path": "presentation.groups[1].evidence[0].display_id",
+          "equals": "EVT007"
         }
       ]
     },
@@ -245,6 +456,99 @@
       ]
     },
     {
+      "id": "anchored_fact_lookup_numeric_status_run",
+      "description": "fact_lookup + 显式数值状态约束应直接执行，不应退回 planning_required。",
+      "payload": {
+        "template": "fact_lookup",
+        "question": "13800138004是否存在满意度评分<3的情况"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "ok"
+        },
+        {
+          "path": "effective_template",
+          "equals": "fact_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_fact_lookup"
+        },
+        {
+          "path": "sparql.count",
+          "equals": 1
+        },
+        {
+          "path": "presentation.entity.display_id",
+          "equals": "CUST004"
+        },
+        {
+          "path": "presentation.key_metrics[0].field",
+          "equals": "statusMetric"
+        },
+        {
+          "path": "presentation.key_metrics[0].value",
+          "approx": 2.8,
+          "tolerance": 0.01
+        }
+      ]
+    },
+    {
+      "id": "anchored_fact_lookup_empty_result_contract",
+      "description": "fact_lookup 0 行结果必须返回 empty_result 和有界恢复契约，不能伪装成 ok。",
+      "payload": {
+        "template": "fact_lookup",
+        "question": "13800138004是否存在近3个月不满意工单数大于0的情况"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "empty_result"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_fact_lookup"
+        },
+        {
+          "path": "next_action",
+          "equals": "follow_recovery_hint_or_report_no_match"
+        },
+        {
+          "path": "manual_fallback_allowed",
+          "equals": false
+        },
+        {
+          "path": "bounded_recovery_contract.same_question_only",
+          "equals": true
+        },
+        {
+          "path": "bounded_recovery_contract.allow_alternate_metric_probe",
+          "equals": false
+        },
+        {
+          "path": "recovery_hint.strategy",
+          "equals": "targeted_grounding_rerun"
+        },
+        {
+          "path": "recovery_hint.preferred_classes[0]",
+          "equals": "customerbehavior"
+        },
+        {
+          "path": "presentation.summary.entity_count",
+          "equals": 0
+        }
+      ]
+    },
+    {
       "id": "batch_numeric_status_solution_plan",
       "description": "多子问题输入应拆成 QuestionUnit DAG，并继承数值约束到条件性 follow-up。",
       "payload": {
@@ -274,8 +578,8 @@
           "equals": "non_empty_or_true"
         },
         {
-          "path": "question_units[1].resolved_slots.bootstrap_signals.asks_solution",
-          "equals": true
+          "path": "question_units[1].resolved_slots.bootstrap_candidates.target_text[0].text",
+          "equals": "解决方案"
         },
         {
           "path": "question_units[1].resolved_slots.status_numeric_constraint.value",
@@ -344,6 +648,22 @@
           "equals": "customer"
         },
         {
+          "path": "question_units[1].response.presentation.target_details[0].display_id",
+          "equals": "STR003"
+        },
+        {
+          "path": "question_units[1].response.presentation.target_details[0].display_name",
+          "equals": "服务补救策略"
+        },
+        {
+          "path": "question_units[1].response.presentation.target_details[0].display_description",
+          "equals": "主动联系客户致歉，提供话费补偿或增值服务赠送，安排专人跟进"
+        },
+        {
+          "path": "question_units[1].response.presentation.answer_contract.preferred_section_order[3]",
+          "equals": "target_details"
+        },
+        {
           "path": "presentation.summary.executed_count",
           "equals": 2
         }
@@ -370,6 +690,14 @@
           "equals": "question_numeric_attribute"
         },
         {
+          "path": "question_units[0].resolved_slots.parser_strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "question_units[0].resolved_slots.ir_provenance",
+          "equals": "deterministic_ir"
+        },
+        {
           "path": "question_units[0].intent_ir.operators[0]",
           "equals": "status_check"
         },
@@ -382,8 +710,12 @@
           "equals": "满意度评分"
         },
         {
-          "path": "question_units[1].intent_ir.operators[1]",
-          "equals": "remediation"
+          "path": "question_units[1].intent_ir.constraints[1].slot",
+          "equals": "target_text"
+        },
+        {
+          "path": "question_units[1].intent_ir.constraints[1].text",
+          "equals": "解决方案"
         },
         {
           "path": "question_units[1].response.query_family",
@@ -522,6 +854,56 @@
       ]
     },
     {
+      "id": "batch_empty_result_bounded_recovery_contract",
+      "description": "batch 空结果时顶层和命中 unit 都必须给出同题同指标的一次性恢复契约。",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在本月不满意来话次数大于0的情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_executed"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "empty_result"
+        },
+        {
+          "path": "question_units[0].response.next_action",
+          "equals": "follow_recovery_hint_or_report_no_match"
+        },
+        {
+          "path": "question_units[0].response.bounded_recovery_contract.allow_alternate_metric_probe",
+          "equals": false
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "skipped"
+        },
+        {
+          "path": "next_action",
+          "equals": "follow_recovery_hint_or_report_no_match"
+        },
+        {
+          "path": "recovery_target_unit",
+          "equals": "q1"
+        },
+        {
+          "path": "bounded_recovery_contract.same_question_only",
+          "equals": true
+        },
+        {
+          "path": "bounded_recovery_contract.allow_alternate_metric_probe",
+          "equals": false
+        }
+      ]
+    },
+    {
       "id": "batch_negative_branch_drops_positive_constraint",
       "description": "否定条件分支只继承焦点，不应继承前一步的正向状态约束。",
       "payload": {
@@ -654,7 +1036,7 @@
           "equals": "customer"
         },
         {
-          "path": "question_units[1].resolved_slots.reference_entity_ids[2]",
+          "path": "question_units[1].resolved_slots.reference_entity_ids[1]",
           "equals": "CUST006"
         },
         {
@@ -679,7 +1061,7 @@
         },
         {
           "path": "conversation_state.units[0].focus.entity_uris[1]",
-          "equals": "http://ywyinfo.com/example-owl#customer_CUST004"
+          "equals": "http://ywyinfo.com/example-owl#customer_CUST006"
         }
       ]
     },
@@ -887,7 +1269,7 @@
     },
     {
       "id": "explanation_enumeration_wrong_template_plan",
-      "description": "解释型枚举应先从更大的模板收敛到 explanation_enumeration，再给出可执行锁定计划。",
+      "description": "在 NoModelBackend 下，独立解释型枚举题若未形成结构化 explain 意图，应诚实 fail closed。",
       "payload": {
         "template": "causal_enumeration",
         "question": "引发投诉的都有什么原因",
@@ -900,33 +1282,33 @@
         },
         {
           "path": "status",
-          "equals": "planner_suggested"
+          "equals": "planning_required"
         },
         {
-          "path": "requested_template",
+          "path": "template",
           "equals": "causal_enumeration"
         },
         {
           "path": "effective_template",
-          "equals": "enumeration"
+          "equals": "causal_enumeration"
         },
         {
           "path": "query_family",
-          "equals": "explanation_enumeration"
+          "equals": "causal_enumeration"
         },
         {
           "path": "plan_executable",
-          "equals": true
+          "equals": false
         },
         {
-          "path": "planner.request_ir.constraints[0].raw_text",
-          "equals": "投诉"
+          "path": "planner.reason",
+          "equals": "no_source_class_grounding"
         }
       ]
     },
     {
       "id": "explanation_enumeration_wrong_template_run",
-      "description": "解释型枚举实际执行时，应返回投诉相关原因集合而不是 fail closed。",
+      "description": "在 NoModelBackend 下，误传 causal_enumeration 的独立解释题应保持 fail closed。",
       "payload": {
         "template": "causal_enumeration",
         "question": "引发投诉的都有什么原因"
@@ -938,37 +1320,37 @@
         },
         {
           "path": "status",
-          "equals": "ok"
+          "equals": "planning_required"
         },
         {
-          "path": "requested_template",
+          "path": "template",
           "equals": "causal_enumeration"
         },
         {
           "path": "effective_template",
-          "equals": "enumeration"
+          "equals": "causal_enumeration"
         },
         {
           "path": "query_family",
-          "equals": "explanation_enumeration"
+          "equals": "causal_enumeration"
         },
         {
-          "path": "presentation.summary.value_count",
-          "equals": 6
+          "path": "plan_executable",
+          "equals": false
         },
         {
-          "path": "presentation.items[0].value_label",
-          "equals": "5G网络问题"
+          "path": "planner.reason",
+          "equals": "no_source_class_grounding"
         },
         {
-          "path": "presentation.items[5].value_label",
-          "equals": "资费争议"
+          "path": "manual_fallback_allowed",
+          "equals": false
         }
       ]
     },
     {
       "id": "explanation_enumeration_direct_run",
-      "description": "直接使用 enumeration 提问解释型枚举问题时，也应稳定命中 explanation_enumeration。",
+      "description": "在 NoModelBackend 下，direct enumeration 若 target_text 未 grounding，应 fail closed 而不是错答。",
       "payload": {
         "template": "enumeration",
         "question": "引发投诉的都有什么原因"
@@ -980,7 +1362,7 @@
         },
         {
           "path": "status",
-          "equals": "ok"
+          "equals": "planning_required"
         },
         {
           "path": "effective_template",
@@ -988,15 +1370,15 @@
         },
         {
           "path": "query_family",
-          "equals": "explanation_enumeration"
+          "equals": "enumeration"
         },
         {
-          "path": "presentation.summary.value_count",
-          "equals": 6
+          "path": "plan_executable",
+          "equals": false
         },
         {
-          "path": "presentation.items[2].value_label",
-          "equals": "服务投诉"
+          "path": "planner.reason",
+          "equals": "no_executable_candidate_plan"
         }
       ]
     }

@@ -1,0 +1,204 @@
+{
+  "suite_name": "obda_planner_regressions",
+  "suite_version": 1,
+  "cases": [
+    {
+      "id": "causal_enumeration_network_complaints_plan",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "因为网络问题，哪些客户投诉了？",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "plan_executable",
+          "equals": true
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.source_class",
+          "equals": "customer"
+        },
+        {
+          "path": "plan_skeleton.sparql.builder.evidence_class",
+          "equals": "event"
+        }
+      ]
+    },
+    {
+      "id": "batch_numeric_status_solution_plan",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "batch_planner_suggested"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[1].dependency.condition",
+          "equals": "non_empty_or_true"
+        },
+        {
+          "path": "question_units[1].resolved_slots.bootstrap_candidates.target_text[0].text",
+          "equals": "解决方案"
+        },
+        {
+          "path": "question_units[1].resolved_slots.status_numeric_constraint.value",
+          "equals": 3
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "planner_suggested"
+        },
+        {
+          "path": "execution_dag.edges[0].condition",
+          "equals": "non_empty_or_true"
+        },
+        {
+          "path": "presentation.summary.unit_count",
+          "equals": 2
+        }
+      ]
+    },
+    {
+      "id": "batch_abstract_status_fail_closed_plan",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004是否存在低满意度情况？如果有，有什么解决方案？",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-batch-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[0].response.planner.reason",
+          "equals": "constraint_grounding_not_executable"
+        },
+        {
+          "path": "question_units[1].response.status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "question_units[1].response.planner.reason",
+          "equals": "constraint_grounding_not_executable"
+        },
+        {
+          "path": "presentation.summary.planning_required_count",
+          "equals": 2
+        }
+      ]
+    },
+    {
+      "id": "anchored_solution_only_fail_closed",
+      "payload": {
+        "template": "causal_lookup",
+        "question": "13800138004有什么解决方案",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_lookup"
+        },
+        {
+          "path": "query_family",
+          "equals": "anchored_causal_lookup"
+        },
+        {
+          "path": "plan_executable",
+          "equals": false
+        },
+        {
+          "path": "planner.reason",
+          "equals": "no_executable_candidate_plan"
+        }
+      ]
+    },
+    {
+      "id": "explanation_enumeration_wrong_template_plan",
+      "payload": {
+        "template": "causal_enumeration",
+        "question": "引发投诉的都有什么原因",
+        "plan_only": true
+      },
+      "assertions": [
+        {
+          "path": "mode",
+          "equals": "question-template"
+        },
+        {
+          "path": "status",
+          "equals": "planning_required"
+        },
+        {
+          "path": "template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "effective_template",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "query_family",
+          "equals": "causal_enumeration"
+        },
+        {
+          "path": "plan_executable",
+          "equals": false
+        },
+        {
+          "path": "planner.reason",
+          "equals": "no_source_class_grounding"
+        }
+      ]
+    }
+  ]
+}

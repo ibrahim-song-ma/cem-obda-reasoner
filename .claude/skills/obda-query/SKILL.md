@@ -3,7 +3,7 @@ name: obda-query
 description: |
   Query ontology through natural language using a local reasoning server.
   Use when the user asks questions about data stored in an RDF/OWL knowledge graph
-  and a local reasoning server is available (typically at localhost:8000).
+  and a local reasoning server is available through the bundled client.
   The skill automatically discovers the ontology schema, generates SPARQL queries,
   and provides natural language answers.
 ---
@@ -14,10 +14,13 @@ Query RDF/OWL ontologies through natural language via a local reasoning server.
 
 ## Prerequisites
 
-Ensure the reasoning server is running:
+For manual local development, the default reasoning server is often started as:
 ```bash
 .venv/bin/uvicorn reasoning_server:app --port 8000
 ```
+
+But during real agent execution, do not assume a fixed port. Use the bundled client and let
+its configured `OBDA_BASE_URL` / state determine the target server.
 
 Use the bundled client for all server interactions:
 
@@ -36,6 +39,13 @@ Fallback client:
 Do not hand-write raw `curl` requests unless both bundled clients are unavailable or broken.
 For multi-step questions, prefer the single-entry `run` command over manually chaining low-level client calls.
 Before using `run`, choose the matching template for the user's question.
+In a normal user-answer turn, QUESTION shorthand now defaults to compact answer-facing output:
+
+- `obda_api.sh run "question" --template ...`
+- `obda_api.sh run "question" --template ... --answer-only`
+- `obda_api.sh run "question" --template ... --json`
+
+all avoid returning the full planner/debug bulk unless you explicitly enter plan/debug mode.
 
 ## Skill Boundary
 
@@ -67,10 +77,10 @@ Responsibility split:
 
 The following rules are mandatory when this skill is active:
 
-1. In the current turn, fetch `/schema` before writing any SPARQL or calling any analyzer endpoint.
+1. In the current turn, satisfy the schema-first rule before writing any manual SPARQL or calling any analyzer endpoint. A question-mode `run` call already fetches `/schema` internally, so it satisfies this requirement without a separate standalone `schema` command.
 2. Do not call `/health` as a routine preflight. Use it only when diagnosing transport/server availability after a failure.
 3. If the query filters by a specific attribute or ID-like field, verify the property's domain in `/schema`.
-4. For `causal_enumeration`, the normal client path is `schema -> run`. Do not insert generic `/sample` or `/health` calls before the first `run`.
+4. For `causal_enumeration`, the normal host path is `run` directly. The client fetches `/schema` internally. Do not prepend a standalone `schema`, and do not insert generic `/sample` or `/health` calls before the first `run`.
 5. If schema alone is not enough to disambiguate population or relationship usage, inspect `/sample/{class_name}` before finalizing SPARQL.
 6. Use the bundled client script for server calls instead of ad-hoc `curl`.
 7. Do not invent predicates or rely on remembered schema from earlier turns.
@@ -97,7 +107,7 @@ If any of the above steps are skipped, the skill has not been followed correctly
 
 For a normal user question, target at most 3 server round-trips:
 
-1. `/schema`
+1. `/schema` or one question-mode `run` that fetches `/schema` internally
 2. one main `/sparql` or one main `/analysis/...`
 3. one optional follow-up request only if the first result is empty, ambiguous, or needs path explanation
 
@@ -111,8 +121,7 @@ Slow answers in this repo are usually caused by too many exploratory requests, n
 
 For `causal_enumeration`, the normal external command budget is even smaller:
 
-1. `/schema`
-2. one `run --json`
+1. one question-mode `run`
 
 Only exceed that when the first `run` returns `empty_result`, `partial_success`, or a clear schema ambiguity.
 
@@ -120,9 +129,8 @@ Only exceed that when the first `run` returns `empty_result`, `partial_success`,
 
 If the question matches `因为...哪些...`, `哪些实体因为...`, or another causal result-set question, follow this exact first pass:
 
-1. `schema`
-2. `run --json`
-3. stop and inspect the structured result
+1. `run --json` or `run "question" --template ...`
+2. stop and inspect the structured result
 
 Do not do any of the following before that first `run`:
 
@@ -137,16 +145,16 @@ Only after the first `run` returns `empty_result`, `partial_success`, or a clear
 
 ### Step 1: Discover Schema (Required First Step)
 
-**Always fetch schema first** before generating SPARQL:
+**Always satisfy schema-first** before generating manual SPARQL:
 
 ```bash
 bash .agents/skills/obda-query/scripts/obda_api.sh schema
 ```
 
-For multi-step questions, the preferred schema-first shortcut is:
+For question-mode `run`, do not call standalone `schema` first. `run` already fetches schema internally, and that is the preferred schema-first shortcut for multi-step natural-language questions:
 
 ```bash
-bash .agents/skills/obda-query/scripts/obda_api.sh run --json '{"template":"fact_lookup","sparql":{"query":"PREFIX ex: <http://example.com/ontology#> SELECT ?entity WHERE { ?entity a ex:TargetClass . } LIMIT 3"}}'
+bash .agents/skills/obda-query/scripts/obda_api.sh run "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？" --template causal_lookup
 ```
 
 ### Step 1.5: Validate Property Locations (Critical)
@@ -194,12 +202,12 @@ Use `/sample/{class_name}` to:
 For `causal_enumeration`, `/sample` is not part of the default first pass. The default is:
 
 ```text
-schema -> run
+run
 ```
 
 Use `/sample` only if that first structured attempt comes back empty, ambiguous, or clearly misaligned with actual population.
 
-If you already know the question is `causal_enumeration`, do not preemptively inspect `sample` "just to understand the structure". The first structured attempt must come directly from `schema`.
+If you already know the question is `causal_enumeration`, do not preemptively inspect `sample` "just to understand the structure". The first structured attempt must come directly from question-mode `run`, which already performs the schema fetch internally.
 
 Do not use `/sample` to:
 
@@ -274,7 +282,7 @@ Runner rule:
 - For natural-language question form, never invent missing ontology classes such as `complaint` just because the user said “投诉”; the planner and validator own that grounding step
 - If a standard-template JSON plan contains both `question` and manual `sparql / analysis / samples`, the client will ignore those manual fields and force locked question-mode execution. Do not rely on mixing them
 - If question form performs any bounded fallback internally, treat that as opaque client behavior. It is not permission to start free exploration or to restate internal widening logic as part of the skill contract
-- For `causal_enumeration`, the default command sequence is `schema -> run`. Do not prepend `health`, generic `sample`, or ad-hoc low-level probes before the first `run`
+- For `causal_enumeration`, the default external command sequence is `run`. Do not prepend standalone `schema`, `health`, generic `sample`, or ad-hoc low-level probes before the first `run`
 - For `causal_enumeration`, if you are about to inspect `sample` before the first `run`, stop. That means you are deviating from the fast path
 - For `causal_lookup` and `causal_enumeration`, prefer `sparql.builder` over free-form `sparql.query` whenever the query shape matches `source class -> evidence class -> filters`
 - For `causal_lookup` and `causal_enumeration`, when the builder shape is clearly `source class -> evidence class`, prefer omitting `link_property` and let the client infer it
@@ -302,15 +310,31 @@ Failure rule:
 - A failed `schema` command does not by itself prove the reasoning server is down
 - Do not silently switch to a chain of raw `curl` commands and continue as if the protocol succeeded
 - If raw `curl` can reach `/schema` but `obda_api.sh` cannot, treat that as a client bug, not a server-down conclusion
+- If the bundled client returns `HTTP 404` for `/schema`, treat that as a likely base-url / transport mismatch first. Do not assume the ontology route is missing and do not widen the investigation into schema mining
+- After a bundled-client `/schema` failure on a normal user question, do not inspect repo implementation files such as `obda_api.py`, `mapping.yaml`, runtime modules, or tool-result artifacts to continue answering the user
+- After a bundled-client `/schema` failure on a normal user question, do not decompose the client into hand-written `curl`, inline Python, or hard-coded `http://127.0.0.1:8000/...` requests in the same turn
+- If you are explicitly debugging transport, keep the diagnosis at the client boundary: retry the bundled client once with the intended base URL or report the client/base-url problem. Do not convert a user-answer turn into source-code debugging
+- In a normal user-answer turn, do not use `Read`, `Grep`, `Glob`, or repo-source `Bash` commands to inspect implementation files after skill activation unless the user explicitly asked for debugging the repository
 - If the planner form returns no executable candidate or low-confidence candidates, do not silently broaden the query. Refine one slot or ask for clarification instead of inventing a wider SPARQL
 - If question form returns `planning_required`, treat it as fail closed by default
 - If question form returns `planning_required` and there is no `recovery_hint`, stop. Do not issue manual `sparql`, `sample`, or exploratory chains in the same turn
+- In a normal user-answer turn, do not call `--plan-only` after `planning_required`. Report that the planner could not form a high-confidence executable plan and stop. Use `--plan-only` only when the user explicitly asks for planner debugging
+- If the compact response contains top-level `must_stop = true`, top-level `must_reply_verbatim = true`, and `final_user_reply`, your next assistant message must be exactly `final_user_reply` and nothing else
+- In that hard-stop case, do not add:
+  - extra explanation
+  - possible reasons
+  - schema suggestions
+  - ontology term examples
+  - rewritten question suggestions
+- Also do not paraphrase the question into a semantically similar retry, do not rerun `run`, and do not go back to `schema` / `schema --full`
 - If a one-anchor status/score question was forced through an enumeration template and comes back empty or misrouted, do not recover by sampling generic classes such as `customer`. Stop, or rerun once with the smaller anchored lookup template only if you are explicitly debugging the route choice
 - If `planning_required` also returns `clarification_hint.kind = explicit_metric_or_threshold_required`, do not use `/sample` or hand-written SPARQL to invent the missing semantic threshold yourself
 - In that case, do not silently rewrite the user's question into your own explicit-threshold variant such as turning `低满意度` into `满意度评分低于3分`
 - The explicit metric/threshold must come from the user's wording or from a planner-grounded numeric constraint already present in the response; if neither exists, stop and ask for a clearer restatement instead of probing data to pick one
 - If question-mode also returns `next_action = ask_user_for_clarification`, follow it literally: ask the user the clarification prompt and stop the investigation in the current turn
 - This is a hard stop: after `next_action = ask_user_for_clarification`, do not call `sample`, `sparql`, `run`, `causal`, `Read`, or `--plan-only` in the same turn
+- After `next_action = ask_user_for_clarification`, do not inspect `schema --full`, grep the schema, browse tool-result files, or mine candidate metrics/thresholds from the ontology on the user's behalf
+- Do not rewrite an abstract status phrase into a concrete sibling metric on your own after fail-closed. If the user did not specify the metric/threshold, ask the clarification question instead of substituting another indicator
 - Do not inspect tool-result files to hunt for a workaround after `ask_user_for_clarification`; the next assistant message must be the clarification question itself
 - Do not restate or answer the original ontology question in the same turn after `ask_user_for_clarification`
 - If the user already asked an explicit anchored property question such as `13800138004的满意度评分是多少`, keep it on `fact_lookup`; do not switch to `/sample` first and do not hand-write a second factual SPARQL before trying question-mode
@@ -318,8 +342,13 @@ Failure rule:
 - If the primary query is an enumeration, do not replace it with sample browsing after the first successful structured result
 - If `causal_enumeration` returns `status: empty_result`, stop and report no matches unless one targeted grounding sample is genuinely required to debug the schema
 - If `run` returns `recovery_hint`, follow it literally: one targeted sample at most, then rerun once
+- If `run` returns `empty_result` together with `recovery_hint`, the recovery scope is the same metric, same threshold, and same anchor only. Do not switch to sibling metrics such as replacing one “不满意” indicator with another
+- In that bounded recovery path, do not grep `schema --full`, do not browse multiple candidate attributes, and do not launch multiple alternative `run` calls. The only allowed repair is one targeted grounding step for the same metric, then rerun the same question once
+- If that rerun still returns `empty_result`, report no matches and stop. Do not continue probing other indicators, broader thresholds, or nearby classes
 - If `causal_enumeration` returns `status: partial_success`, inspect the structured SPARQL rows first. Only do one targeted grounding recovery if the missing analyzer input is caused by schema/query shape, then rerun once
 - If `presentation` is available, do not restate raw machine paths such as `entity_A --predicate--> entity_B` unless the user explicitly asks for raw path details
+- If a successful `causal_lookup` response already contains `presentation.solution_details` or `presentation.related_terminal_details`, answer from those structured blocks and stop. Do not issue `sample`, `causal`, `analysis-neighborhood`, `analysis-paths`, `Read`, or hand-written `sparql` just to expand the same strategy/event/workorder details
+- `sample` is class-only grounding. Do not call `sample` with an instance local name such as `customerbehavior_BEH004` or `remediationstrategy_STR003`
 - If the compact `analysis` summary is enough to answer the question, do not request `include_analysis: true` just to restate the same path evidence in a more verbose machine form
 - For `causal_enumeration`, default answer order is: summary sentence, compact entity table, grouped evidence details, brief causal confirmation
 - For `causal_enumeration`, do not mention `planner_attempts`, `execution_variant`, or raw path counts unless the user explicitly asks for debugging detail

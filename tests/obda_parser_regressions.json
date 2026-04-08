@@ -1,0 +1,532 @@
+{
+  "suite_name": "obda_parser_regressions",
+  "suite_version": 2,
+  "cases": [
+    {
+      "id": "deterministic_numeric_constraint_unit_parse",
+      "description": "Deterministic parser 应稳定抽出锚点和显式数值约束。",
+      "payload": {
+        "mode": "unit",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况"
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "NoModelBackend"
+        },
+        {
+          "path": "slots.has_anchor",
+          "equals": true
+        },
+        {
+          "path": "slots.anchors[0].value",
+          "equals": "13800138004"
+        },
+        {
+          "path": "slots.status_numeric_constraint.attribute_text",
+          "equals": "满意度评分"
+        },
+        {
+          "path": "slots.status_numeric_constraint.op",
+          "equals": "lt"
+        },
+        {
+          "path": "slots.status_numeric_constraint.value",
+          "equals": 3
+        }
+      ]
+    },
+    {
+      "id": "deterministic_multi_unit_utterance_parse",
+      "description": "Deterministic parser 应保持多句拆分与条件依赖。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "path": "question_units[0].text",
+          "equals": "13800138004是否存在满意度评分低于3的情况"
+        },
+        {
+          "path": "question_units[1].text",
+          "equals": "有什么解决方案"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "question_units[1].dependency.condition",
+          "equals": "non_empty_or_true"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        }
+      ]
+    },
+    {
+      "id": "deterministic_reference_marker_unit_parse",
+      "description": "Deterministic parser 应保留结果集引用标记。",
+      "payload": {
+        "mode": "unit",
+        "template": "causal_enumeration",
+        "question": "这些客户的投诉原因分别是什么"
+      },
+      "assertions": [
+        {
+          "path": "parser_output.question_units[0].reference_markers[0]",
+          "equals": "这些"
+        },
+        {
+          "path": "question_unit.raw_text",
+          "equals": "这些客户的投诉原因分别是什么"
+        }
+      ]
+    },
+    {
+      "id": "deterministic_causal_surface_split_parse",
+      "description": "Deterministic parser 应把口语化因果枚举稳定拆成 result/cause/action 三个 surface hints。",
+      "payload": {
+        "mode": "unit",
+        "template": "causal_enumeration",
+        "question": "有哪些客户因为5G信号差而投诉了?"
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "slots.bootstrap_candidates.cause_text[0].text",
+          "equals": "5G信号差"
+        },
+        {
+          "path": "slots.bootstrap_candidates.result_hint[0].text",
+          "equals": "客户"
+        },
+        {
+          "path": "slots.bootstrap_candidates.action_text[0].text",
+          "equals": "投诉"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_unavailable_preserves_multi_unit_fallback",
+      "description": "Anthropic-compatible CLI backend 不可用时，应保留多句拆分并安全降回 deterministic unit bundle。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "__no_such_parser_backend__"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "AnthropicCompatibleCliBackend"
+        },
+        {
+          "path": "parser_output.ambiguities[0].kind",
+          "equals": "backend_unavailable"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[0].parser_output.model_backend",
+          "equals": "NoModelBackend"
+        },
+        {
+          "path": "unit_parses[1].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.model_backend",
+          "equals": "NoModelBackend"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_success_hybrid_multi_unit_parse",
+      "description": "Anthropic-compatible CLI backend 成功时，应保留 utterance-level hybrid parse 并将 unit parse 投影为 hybrid bundle。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_success.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "AnthropicCompatibleCliBackend"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.question_units[0].question_acts[0]",
+          "equals": "remediation"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_structured_output_wrapper_parse",
+      "description": "Anthropic-compatible CLI backend 若返回 Claude-style wrapper，应优先消费 structured_output。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_structured_output.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "AnthropicCompatibleCliBackend"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.question_units[0].question_acts[0]",
+          "equals": "solution_request"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_json_only_fallback_parse",
+      "description": "Anthropic-compatible CLI backend 若 schema mode 不被 host 支持，应自动退到 json-only mode 并仍产出 hybrid parse。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_schema_then_json_only.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "AnthropicCompatibleCliBackend"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.question_units[0].question_acts[0]",
+          "equals": "solution_lookup"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_projection_mismatch_preserves_multi_unit_fallback",
+      "description": "Anthropic-compatible CLI backend 的 utterance-level unit 数不匹配时，应保留 surface decomposition 并安全降回 deterministic unit bundle。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_mismatch.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.ambiguities[0].kind",
+          "equals": "backend_projection_mismatch"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.model_backend",
+          "equals": "NoModelBackend"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_underfilled_parse_preserves_multi_unit_fallback",
+      "description": "Anthropic-compatible CLI backend 即使返回了多 unit JSON，但若 question acts / surface constraints 结构过弱，也必须整体降回 deterministic unit bundle。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_underfilled.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.ambiguities[0].kind",
+          "equals": "backend_underfilled_parse"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "unit_parses[0].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.strategy",
+          "equals": "DeterministicStrategy"
+        },
+        {
+          "path": "unit_parses[1].parser_output.model_backend",
+          "equals": "NoModelBackend"
+        }
+      ]
+    },
+    {
+      "id": "anthropic_cli_backend_missing_dependency_preserves_hint_dependency",
+      "description": "Anthropic-compatible CLI backend 即使漏掉了 follow-up dependency，parser normalize 仍应保留 deterministic decomposition 的 unit dependency。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "AnthropicCompatibleCliBackend",
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_missing_dependency.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "question_units[1].dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "unit_parses[1].question_unit.dependency.depends_on",
+          "equals": "q1"
+        },
+        {
+          "path": "unit_parses[1].parser_output.question_units[0].dependency.depends_on",
+          "equals": "q1"
+        }
+      ]
+    },
+    {
+      "id": "mock_backend_success_hybrid_multi_unit_parse",
+      "description": "Mock backend 应通过统一 ModelBackend contract 走通 hybrid multi-unit parse。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BACKEND": "MockModelBackend",
+          "OBDA_MODEL_MOCK_RESPONSE_FILE": "/Users/Song/code/cc/reasoner/tests/mock_model_backend_success.json",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "MockModelBackend"
+        },
+        {
+          "path": "unit_parses[1].parser_output.question_units[0].question_acts[0]",
+          "equals": "remediation"
+        }
+      ]
+    },
+    {
+      "id": "autodetect_mock_backend_success_hybrid_multi_unit_parse",
+      "description": "未显式指定 backend 时，mock env marker 应自动激活 MockModelBackend。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_MOCK_RESPONSE_FILE": "/Users/Song/code/cc/reasoner/tests/mock_model_backend_success.json",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "MockModelBackend"
+        }
+      ]
+    },
+    {
+      "id": "autodetect_anthropic_cli_backend_success_hybrid_multi_unit_parse",
+      "description": "未显式指定 backend 时，Anthropic-compatible host marker 应自动激活 AnthropicCompatibleCliBackend。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "env": {
+          "OBDA_MODEL_BINARY": "/Users/Song/code/cc/reasoner/tests/fake_agent_model_backend_success.sh",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "AnthropicCompatibleCliBackend"
+        }
+      ]
+    },
+    {
+      "id": "openai_compatible_backend_success_hybrid_multi_unit_parse",
+      "description": "OpenAI-compatible backend 应能通过统一 ModelBackend contract 走通 hybrid multi-unit parse。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "server": {
+          "script": "/Users/Song/code/cc/reasoner/tests/fake_openai_compatible_server.py",
+          "response_file": "/Users/Song/code/cc/reasoner/tests/mock_model_backend_success.json"
+        },
+        "env": {
+          "OBDA_MODEL_BACKEND": "OpenAICompatibleBackend",
+          "OBDA_MODEL_BASE_URL": "__SERVER_URL__",
+          "OBDA_MODEL_PATH": "/chat/completions",
+          "OBDA_MODEL_API_KEY": "test-key",
+          "OBDA_MODEL_NAME": "test-parser-model",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "OpenAICompatibleBackend"
+        },
+        {
+          "path": "unit_parses[1].parser_output.question_units[0].question_acts[0]",
+          "equals": "remediation"
+        }
+      ]
+    },
+    {
+      "id": "autodetect_openai_compatible_backend_success_hybrid_multi_unit_parse",
+      "description": "未显式指定 backend 时，OpenAI-compatible env marker 应自动激活 OpenAICompatibleBackend。",
+      "payload": {
+        "mode": "utterance",
+        "template": "causal_lookup",
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？",
+        "server": {
+          "script": "/Users/Song/code/cc/reasoner/tests/fake_openai_compatible_server.py",
+          "response_file": "/Users/Song/code/cc/reasoner/tests/mock_model_backend_success.json"
+        },
+        "env": {
+          "OBDA_MODEL_BASE_URL": "__SERVER_URL__",
+          "OBDA_MODEL_PATH": "/chat/completions",
+          "OBDA_MODEL_API_KEY": "test-key",
+          "OBDA_MODEL_NAME": "test-parser-model",
+          "OBDA_MODEL_MAX_ATTEMPTS": "1"
+        }
+      },
+      "assertions": [
+        {
+          "path": "parser_output.strategy",
+          "equals": "HybridStrategy"
+        },
+        {
+          "path": "parser_output.model_backend",
+          "equals": "OpenAICompatibleBackend"
+        }
+      ]
+    }
+  ]
+}

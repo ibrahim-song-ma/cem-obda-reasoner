@@ -557,67 +557,93 @@ LLM 更适合先产出类似这样的中间语义：
 
 更合理的形态应当是一个分阶段、受约束、带预算的执行器。
 
-建议固定为以下流水线：
+建议固定为以下三层流水线：
 
-1. router
-   - 先将问句分流到最小 query family
-   - 目标不是理解全部语义，而是先决定问题属于哪一类执行线路
-   - 建议至少支持：
+1. Language Intent Parser
+   - 先把用户输入解析成语言层的结构化请求，而不是直接进入 ontology grounding
+   - 它负责的是语言控制结构，不是领域语义绑定
+   - 它的推荐形态应是：
+     - `LLM-first`
+     - `schema-first`
+     - `deterministic-minimal`
+   - 至少应包含：
+     - utterance decomposition
+     - dependency / conditional parsing
+     - reference resolution
+     - question act / operator parsing
+     - anchor form detection
+     - numeric / negation / quantifier / comparison parsing
+   - 这层产物应先收敛成 canonical `Intent IR`
+   - deterministic 层允许保留的只应是 language-agnostic surface normalization / hints，例如：
+     - Unicode / 标点 / 空白归一化
+     - 数字字面量
+     - 符号比较器：`< > <= >=`
+     - URI / local-name / identifier-like literal 形态
+     - span / offset 保留
+   - 语言相关的 dependency / question-word / reference 解释
+     不应成为 deterministic core contract，而应由 LLM-first parser 或 locale-aware adapter 负责
+   - `explain / remediation / enumerate / lookup` 这类 operator
+     未来应由通用 question-act parser 给出，而不是由领域语义词表硬编码出来
+   - 不允许在这里保留领域语义词表，例如：
+     - `ROLE_PATTERNS`
+     - `SOLUTION_REQUEST_TERMS`
+     - `EXPLANATION_REQUEST_TERMS`
+     - `SEMANTIC_LABEL_SUFFIXES`
+   - 原因是这些词表会把语言层错误地提升成领域语义决策层，违反四原则
+
+2. Ontology Grounding Layer
+   - 只负责把开放语义槽 grounding 到 ontology / mapping / value catalog
+   - grounding 的输入应来自 `Intent IR` 中的开放槽位，而不是直接消费一整句 raw text
+   - 这层至少包括：
+     - anchor binding
+     - class / attribute / relation / value candidate recall
+     - ontology / mapping structural pruning
+     - grounded constraint view
+   - grounding 不应只依赖词法字符串匹配
+   - 最终应采用：
+     - schema / manifest label recall
+     - 本地语义召回
+     - ontology / mapping 结构裁剪
+
+这里需要特别强调一个边界：
+
+- `phone`、`customer ID`、`workorder ID` 这类说法，不应作为 parser 或 planner 核心枚举类型
+- 这些最多只应是 manifest binding 后的解释结果
+- parser 只负责识别“值的形态”和语言控制关系
+- 具体它绑定到哪个 ontology 属性 / class，应由 grounding 层决定
+
+3. Planner / Lowering / Validator
+   - 只消费：
+     - `Intent IR`
+     - grounded constraints
+     - resolved references / discourse state
+   - planner 内部再分为：
+     - family routing
+     - semantic request IR builder
+     - node-based planner
+     - lowerer
+     - validator
+   - family routing 的职责是把高层意图映射到最小可执行 family，例如：
      - `anchored_fact_lookup`
      - `anchored_status_lookup`
      - `anchored_causal_lookup`
      - `enumeration`
      - `causal_enumeration`
      - `hidden_relation`
-
-2. anchor detector
-   - 用确定性规则识别强锚点
-   - 识别的应是抽象锚点形态，而不是业务特定 ID 类型
-   - 例如：
-     - `resource_uri`
-     - `resource_local_name`
-     - `structured_literal`
-     - `identifier_like_literal`
-   - 这一步不应依赖大模型自由猜测
-
-这里需要特别强调一个边界：
-
-- `phone`、`customer ID`、`workorder ID` 这类说法，不应作为 planner 核心枚举类型
-- 这些最多只应是 manifest binding 后的解释结果
-- anchor detector 只负责识别“值的形态”
-- 具体它绑定到哪个 ontology 属性 / class，应由 semantic manifest / grounding 层决定
-
-3. grounder
-   - 将问句中的槽位 grounding 到 ontology 的类、属性、值约束候选
-   - grounding 不应只依赖词法字符串匹配
-   - 最终应采用：
-     - 词法召回
-     - 本地语义召回
-     - ontology / mapping 结构裁剪
-
-4. semantic request IR builder
-   - 将 router / anchor detector / grounder 的结果收敛成稳定的 semantic request IR
-   - 该 IR 应显式表达：
+   - semantic request IR builder 应显式表达：
      - query family
      - anchors
      - semantic targets
      - predicates / filters
      - output grain
-     - whether analysis / solution / explanation is requested
-
-5. planner
-   - 基于 semantic request IR 构建 node-based query plan
-   - 只组合少量、合法、与 query family 相匹配的 plan nodes
+     - analysis / explanation / remediation request
+   - planner 基于 semantic request IR 构建 node-based query plan
    - 不在运行时开放式探索
    - 不允许退化成无约束 sample / grep / sparql 试探链
    - 如果需要描述图遍历骨架，可保留 shape 作为 search hint，但不能把它当成最终 plan
-
-6. lowerer
-   - 将 node-based plan 优先 lowering 为 `sparql.builder`
+   - lowerer 将 node-based plan 优先 lowering 为 `sparql.builder`
    - 只有 builder 无法表达时，才 lowering 为 raw `SPARQL`
-
-7. validator
-   - 在执行前做硬校验：
+   - validator 在执行前做硬校验：
      - 类/属性是否存在
      - domain/range 是否匹配
      - link direction 是否可执行
@@ -625,18 +651,572 @@ LLM 更适合先产出类似这样的中间语义：
 
 这个 revised pipeline 的关键含义是：
 
-- planner 的重点不是“替代 LLM 写查询”
-- planner 的重点是“先分流，再 grounding，再规划，再校验，再执行”
+- parser 的重点不是“猜 ontology 概念”，而是“稳定解析语言控制结构”
+- grounding 的重点不是“硬编码问句词表”，而是“把开放语义槽绑定到 ontology”
+- planner 的重点不是“替代 LLM 写查询”，而是“先路由，再编译，再校验，再执行”
 
 因此，`Semantic Query Planner` 的价值不在于保证每次都 top-1 命中，
 而在于：
 
+- 让 `Intent IR` 成为稳定输入
+- 让 grounding 成为独立层，而不是散落在词法/路由/lowering 各处
 - 快速得到少量候选
 - 快速验证哪些候选结构合法
 - 低置信时快速失败，而不是继续浪费预算做开放探索
 
 继续参考 MetricFlow 时，这里的关键不是“更会猜查询语句”，
-而是“先把语义请求稳定化，再把它编译成 plan nodes，再做 lowering”。
+而是“先把语言意图稳定化，再做 ontology grounding，再把它编译成 plan nodes，再做 lowering”。
+
+#### 三层职责定义
+
+为了避免 parser / grounding / planner 再次混层，这里需要把三者的职责、输入输出和失败语义固定下来。
+
+1. Language Intent Parser
+   - 设计思想：
+     - 它是语言前端，不是 ontology 语义解释器
+     - 它负责把“用户在说什么结构”解析清楚，而不是把结构直接绑定到图谱
+   - 输入：
+     - 原始 utterance
+     - 轻量 conversation state
+     - 已知引用上下文
+   - 输出：
+     - `QuestionUnit[]`
+     - unit 之间的 dependency / DAG
+     - canonical `Intent IR`
+       - `focus`
+       - `operators`
+       - `constraints`
+       - `references`
+       - `output`
+       - `anchor_forms`
+       - `comparators`
+   - 负责：
+     - LLM-first 的语言意图解析
+     - 分句
+     - 条件依赖
+     - 指代/引用
+     - question act 解析
+     - 数值比较、否定、量词、范围
+     - 锚点形态识别
+     - 错别字 / 少字 / 长尾表达恢复
+     - 多语言表述理解
+   - 不负责：
+     - 选择 ontology class / property / relation / value
+     - 判定 `13800138004` 是 phone 还是 customer ID
+     - 靠领域词表推出 score/status/solution/explanation property
+     - 直接决定最终 SPARQL 或最终 query family plan
+   - 失败语义：
+     - parser 可以输出不完整 `Intent IR`
+     - 但不能编造 ontology 绑定
+     - 语言结构不明时，应保留 ambiguity，而不是提前猜 semantic slot
+
+2. Ontology Grounding Layer
+   - 设计思想：
+     - 它是语义绑定层，不是语言理解层，也不是执行层
+     - 它负责回答“这些开放语义槽在 ontology / mapping 里到底对应什么”
+   - 输入：
+     - `Intent IR`
+     - semantic manifest
+     - runtime data property catalog
+     - value catalog / bounded `ValueNode`
+   - 输出：
+     - grounded anchors
+     - grounded constraints
+     - candidate bindings
+     - `grounded constraint view`
+       - `requested_text`
+       - `effective_text`
+       - `binding_terms`
+       - `top_candidate`
+       - ambiguity / unresolved reason
+   - 负责：
+     - anchor binding
+     - class / attribute / relation / value candidate recall
+     - domain/range/mapping structural pruning
+     - grounded semantic view 生成
+   - 不负责：
+     - 重新做分句和依赖分析
+     - 修改用户问题语义
+     - 开放式 sample / grep / sparql 探测
+     - 用领域词表硬编码 role/class/property
+   - 失败语义：
+     - grounding 不足时，应返回 unresolved / low-confidence binding
+     - 不能把弱 binding 伪装成可执行语义
+     - 不能为了“尽量答出来”越层替 parser 或 planner 做决定
+
+3. Planner / Lowering / Validator
+   - 设计思想：
+     - 它是受约束的查询编译器，不是语言理解器，也不是 ontology 命名猜测器
+     - 它负责回答“已经绑定好的语义请求，如何最小、合法、可执行地落成查询计划”
+   - 输入：
+     - `Intent IR`
+     - grounded constraints
+     - resolved references / discourse state
+   - 输出：
+     - `query_family`
+     - semantic request IR
+     - node-based query plan
+     - lowered builder / SPARQL
+     - validator result
+     - execution / fail-closed / bounded recovery contract
+   - 负责：
+     - family routing
+     - semantic request IR 收敛
+     - node-based plan 构建
+     - lowering
+     - validator
+     - bounded recovery policy
+   - 不负责：
+     - 重新读取 raw utterance 做语言理解
+     - 靠 lexical phrase table 推 ontology 语义
+     - 把 `planning_required` 退化成自由探索链
+   - 失败语义：
+     - plan 不合法、grounding 不足或 validator 不通过时，应 fail closed
+     - 最多只允许受控 widening 或一次有界恢复
+     - 不能把失败转嫁为 Claude/Agent 的手工 sample / 手写 SPARQL / 自行改写问题
+
+可以把三层的边界记成一句话：
+
+- Parser 解决“用户在说什么结构”
+- Grounder 解决“这些结构在 ontology 里对应什么”
+- Planner 解决“如何把这些已绑定语义编译成可执行查询”
+
+#### Language Intent Parser 详细设计
+
+在当前架构下，`Language Intent Parser` 不应被实现成“又一层词表 + regex if/else”，
+也不应被实现成“LLM 直接自由输出一段半结构化文本”。
+更合理的形态是：
+
+- 一个有严格输出 schema 的 parser front-end
+- 一个 `LLM-first` 的意图解析主体
+- 一个 minimal language-agnostic lossless canonicalizer
+- 一个 repo-owned exactness / schema validator
+- 一个 backend 可替换的模型接入层
+
+##### 设计原则
+
+1. parser 只产出语言结构，不产出 ontology 绑定
+   - 不输出 class/property/value node
+   - 不输出 `phone / score / status property` 这类领域 role 判定
+   - 只输出结构化语言意图
+
+2. lossless canonicalization 与 language understanding 分开
+   - canonicalization：
+     - Unicode / 标点归一
+     - span / offset 保留
+     - exact literal 保真
+   - language understanding：
+     - utterance decomposition
+     - question act
+     - operator scope
+     - dependency / reference
+     - ellipsis / 承接省略
+     - typo / omission recovery
+     - 多子句之间的语义组合
+
+3. LLM-first for understanding, deterministic-minimal for exactness
+   - language understanding 应由 LLM-first parser 主导
+   - deterministic 层只保留跨语言稳定的最小 canonicalization / exactness support
+   - model 的输出必须受 schema 约束
+
+4. parser 可以不确定，但不能越权
+   - 可以输出 ambiguity / confidence
+   - 可以要求 clarification
+   - 不能越层替 grounder 绑定 ontology
+   - 不能越层替 planner 生成 plan
+
+5. strategy / backend / provenance 必须分层命名
+   - `Parser Strategy`
+     - `DeterministicStrategy`
+     - `HybridStrategy`
+   - `Model Backend`
+     - `NoModelBackend`
+     - `AnthropicCompatibleCliBackend`
+     - `OpenAICompatibleBackend`
+     - `MockModelBackend`
+   - `IR Provenance`
+     - `deterministic_ir`
+     - `hybrid_ir`
+     - `llm_generated_ir`
+   - 无论 strategy / backend 如何组合，都必须输出同一份 canonical parse schema
+
+##### Parser 输入输出
+
+`ParserInput`
+
+- `utterance`
+- `conversation_state`
+- `reference_context`
+- `strategy`
+  - `DeterministicStrategy`
+  - `HybridStrategy`
+- `model_backend`
+  - `NoModelBackend`
+  - `AnthropicCompatibleCliBackend`
+  - `OpenAICompatibleBackend`
+  - `MockModelBackend`
+
+`ParserOutput`
+
+- `question_units`
+- `dependency_dag`
+- `intent_irs`
+- `parser_confidence`
+- `ambiguities`
+- `clarification_candidates`
+- `parser_evidence`
+- `ir_provenance`
+
+##### Canonical Parser Schema
+
+每个 `QuestionUnit` 至少应包含：
+
+- `unit_id`
+- `raw_text`
+- `normalized_text`
+- `dependency`
+- `reference_markers`
+- `anchor_forms`
+- `comparators`
+- `question_acts`
+- `surface_constraints`
+- `ambiguities`
+- `confidence`
+
+对应的 `Intent IR` 最低应包含：
+
+- `focus`
+  - `anchored_entity`
+  - `referenced_result_set`
+  - `implicit_entity_set`
+  - `global_enumeration`
+- `operators`
+  - `lookup`
+  - `enumerate`
+  - `status_check`
+  - `explain`
+  - `remediation`
+  - `count`
+  - `compare`
+  - `relation_discovery`
+- `constraints`
+  - `comparison`
+  - `surface_predicate`
+  - `cause_phrase`
+  - `target_phrase`
+  - `time_scope`
+  - `negation`
+  - `quantifier`
+- `references`
+  - `depends_on`
+  - `reference_scope`
+  - `distribution`
+- `output`
+  - `shape`
+  - `grain`
+  - `needs_analysis`
+- `ambiguities`
+- `confidence`
+
+这里的关键点是：
+
+- parser 可以输出 `surface_predicate = 低满意度`
+- parser 可以输出 `comparison = 满意度评分 < 3`
+- parser 可以输出 `question_act = remediation`
+- 但 parser 不能输出：
+  - `customerbehavior_满意度评分`
+  - `remediationstrategy`
+  - `hasBehavior`
+  - `status-like property = customerbehavior_满意度评分`
+
+##### 内部流水线
+
+建议固定为五步：
+
+1. Lossless Canonicalization
+   - 统一全角/半角
+   - 统一标点
+   - 统一空白/Unicode
+   - 保留 span offset，便于后续 evidence 回溯
+   - 只做 lossless canonicalization，不承担语言理解职责
+
+2. LLM Intent Parse
+   - 由 LLM-first parser 主导：
+     - utterance decomposition
+     - dependency / reference parsing
+     - question-act parsing
+     - ellipsis resolution
+     - typo / omission recovery
+     - multilingual understanding
+   - 输出必须是 schema constrained 的 typed object
+
+3. Constraint Assembly
+   - 把 canonicalized text 和 LLM parse 收敛成 surface constraints
+   - 例如：
+     - `满意度评分 < 3`
+     - `低满意度`
+     - `因为网络问题`
+     - `这些客户`
+   - 这一步仍然不做 ontology binding
+
+4. Exactness + Schema Validation
+   - 校验模型输出中的 exact elements 是否可由原始输入或 canonicalized 输入支持
+   - 重点包括：
+     - 数字字面量
+     - 符号比较器
+     - identifier-like literal / URI / local-name
+     - span / offset 对齐
+   - 这一步是校验，不是重新理解语义
+
+5. Intent IR Assembly
+   - 组装 canonical `Intent IR`
+   - 同时输出：
+     - confidence
+     - ambiguity set
+     - clarification candidate
+   - exactness 冲突时以 validator 为准
+   - language understanding 以 validator 后的 LLM parse 为准
+   - 无法收敛时应保留 ambiguity，而不是越权猜语义
+
+##### Hybrid Parser 设计
+
+最推荐的实现不是纯 deterministic，也不是“让 skill 直接自由发挥”，而是 hybrid parser：
+
+1. `Lossless Canonicalizer`
+   - 提供 minimal language-agnostic canonicalization
+2. `LLM Intent Parser`
+   - 负责主要语言理解
+3. `Exactness / Schema Validator`
+   - 统一收敛 exactness、schema、confidence、ambiguity
+
+这意味着：
+
+- LLM 可以被充分利用
+- 但它不能直接决定 ontology 绑定
+- 也不能跳过 schema 输出自由生成
+
+##### 与 LLM 的边界
+
+在 AI 时代，这一层完全可以利用 LLM，但边界必须写死：
+
+- 允许：
+  - LLM 在 repo 定义的 schema 之下生成 `ParserOutput` / `Intent IR`
+  - 也就是 `LLM-generated Intent IR`
+  - 前提是：
+    - schema 由 repo 拥有
+    - 字段语义由 repo 拥有
+    - 结果必须经过 repo 内部校验
+
+- LLM 可以做：
+  - question-act parsing
+  - discourse/reference interpretation
+  - ellipsis resolution
+  - ambiguity detection
+  - clarification candidate generation
+
+- LLM 不可以做：
+  - 直接输出 ontology class/property/relation
+  - 直接决定最终 query family lowering
+  - 直接写 SPARQL
+  - 在 parser 阶段补出 domain-semantic 绑定
+  - 拥有 `Intent IR` contract 的定义权
+  - 通过 skill prompt 私自扩展字段、改变字段语义或引入隐式 ontology 绑定
+
+更具体地说，LLM 在 parser 层的正确位置是：
+
+- 作为 `Intent IR` 的结构化生成器
+- 而不是作为 ontology grounder 或 query planner
+- 也就是说：
+  - `LLM-generated Intent IR` 是允许的
+  - `LLM-owned semantic contract` 是不允许的
+  - `LLM-does-grounding/planning by stealth` 也是不允许的
+
+进一步说，如果运行时是 Claude/Agent 客户端：
+
+- 可以把 Claude 作为 parser backend
+- 但不能把 skill prompt 当成 `Intent IR` 的最终定义位置
+- skill 可以承载 parser backend 调用
+- 不能承载 parser contract、grounding contract、planner contract
+
+因此正确形态应是：
+
+- repo 内定义：
+  - `ParserInput`
+  - `ParserOutput`
+  - canonical `Intent IR`
+- parser strategy 与 model backend 分层：
+  - `DeterministicStrategy + NoModelBackend`
+  - `HybridStrategy + AnthropicCompatibleCliBackend`
+  - `HybridStrategy + OpenAICompatibleBackend`
+  - `HybridStrategy + MockModelBackend`
+- 无论 strategy/backend 是什么，最终都必须回到 repo-owned schema
+
+##### 失败语义与澄清策略
+
+parser 应显式区分三种失败：
+
+1. 语言理解失败
+   - 分句、依赖、指代、scope 无法稳定解析
+   - 应优先请求澄清
+
+2. question-act 歧义
+   - 例如同一句可能既像 explain 又像 enumerate
+   - 应返回 ambiguity set，而不是擅自选一个
+
+3. semantic under-specification
+   - 例如用户只说“低满意度”
+   - parser 可以识别为 `status_check`
+   - 但不能补 metric/threshold
+   - 应把不足留给 clarification / grounding fail-closed 处理
+
+##### 与 Grounder / Planner 的接口约束
+
+parser 交给 grounder 的，不应是 raw question text，而应是：
+
+- `Intent IR`
+- `QuestionUnit`
+- `surface_constraints`
+- `anchor_forms`
+- `comparators`
+- `references`
+- `ambiguities`
+
+grounder 不应重新解释 question act；
+planner 不应重新解释 raw utterance。
+
+##### 迁移策略
+
+在本 repo 内，建议按三步演进：
+
+1. 先把当前 `extract_question_slots + bootstrap_*` 收敛成 parser adapter
+   - 让现有逻辑先统一输出 canonical parser schema
+
+2. 再把 parser 与 grounder 的边界切开
+   - `bootstrap_candidates` 退化为 parser 输出中的 `surface_constraints`
+   - grounding 只消费 parser schema，不再回读 raw slot flags
+
+3. 最后引入 `HybridStrategy`
+   - deterministic 层只保留 language-agnostic surface normalization / hints
+   - 让 `AnthropicCompatibleCliBackend` / `OpenAICompatibleBackend` / `MockModelBackend` 接管 parser backend
+   - 确保引入 LLM 后不会破坏 fail-closed 契约
+
+当前实现状态补充：
+
+- parser facade / parser contract / IR contract 已经独立成 repo-owned 模块
+- parser 现在已经有通用 `ModelBackend` 层，并受 repo-owned schema 约束
+- `ModelBackend` 现在是 protocol-first profile 层
+  - backend 的 canonical naming、alias、transport family、env-based activation marker
+    已统一收口到 repo-owned profile contract
+  - 也就是说，provider/profile 的变化不再回流到 parser core
+- 当前 canonical backend 为：
+  - `NoModelBackend`
+  - `AnthropicCompatibleCliBackend`
+  - `OpenAICompatibleBackend`
+  - `MockModelBackend`
+- legacy alias 仍兼容：
+  - `AgentModelBackend -> AnthropicCompatibleCliBackend`
+  - `ClaudeCliBackend -> AnthropicCompatibleCliBackend`
+  - `StandaloneModelBackend -> OpenAICompatibleBackend`
+- parser facade 现在已经支持整句级的 model-backed parse，并能把 utterance-level parser output 投影回 unit-level parser output
+- 若没有任何 model-host / model-api marker，默认主路径仍是 `DeterministicStrategy + NoModelBackend`
+- 若环境中出现对应 protocol marker，则 parser 现在会自动解析为匹配的 backend，并自动提升到 `HybridStrategy`
+  - mock marker -> `MockModelBackend`
+  - OpenAI-compatible marker -> `OpenAICompatibleBackend`
+  - Anthropic-compatible host marker -> `AnthropicCompatibleCliBackend`
+- 当前 model-backed parser 仍不是默认成熟主路径
+- `AnthropicCompatibleCliBackend` 适配本机 Anthropic-compatible CLI 宿主
+  - 当前具体实现仍以本机 `claude` CLI 为 transport
+  - 但 backend 语义上不再绑定 Claude 这个 provider
+  - 例如 Kimi Code 通过 Claude Code / Anthropic-compatible 配置接入时，应走这条 backend
+  - 当前实现已显式支持 Claude-style wrapper payload 中的 `structured_output`
+    - 也就是说，真实宿主如果返回的是 `result + structured_output` 包装对象，parser backend 会优先消费 `structured_output`
+  - 当前还具备 host-capability parse ladder
+    - 优先尝试 schema mode
+    - 若宿主不稳定支持 `--json-schema`，则自动降到 json-only mode
+    - 仍由 repo validator 负责最终 schema/exactness 收口
+- 真实 Claude Code 宿主 E2E 验证暴露了一条必须收紧的 skill/client 边界：
+  - 如果 bundled client 的 `/schema` 首跳返回 `404`
+  - 应先视为 base-url / transport mismatch
+  - 不应在同一用户问题里退化成读取 repo 源码、手写 `curl`、手写 Python HTTP 请求或硬编码 `127.0.0.1:8000`
+  - 也就是说，正常问答 turn 的失败恢复边界仍然必须停留在 client/transport 层，而不是升级成源码调试
+- 真实 Claude Code 宿主读取的是 `.claude/skills/obda-query/SKILL.md`
+  - 因此这份 host skill copy 必须与 `.agents/skills/obda-query/SKILL.md` 同步
+  - 否则 repo 内 skill 文档即使更新，真实宿主 E2E 仍可能继续沿旧协议偏航
+- bundled client transport 现在已显式处理 localhost / loopback 宿主场景：
+  - 对 `127.0.0.1 / localhost / ::1` 的 HTTP 请求，Python `urllib` 会主动绕过 shell 注入的代理设置
+  - `curl` fallback 也会显式附加 `--noproxy *`
+  - 这是因为真实 Claude Code / 宿主 shell 中，loopback 请求可能被 `HTTP_PROXY / HTTPS_PROXY / ALL_PROXY` 类环境变量劫持
+  - 典型症状是：
+    - `curl http://127.0.0.1:8000/schema` 正常
+    - 但 bundled client / `urllib` 请求同一地址返回 `404`
+  - 当前仓库已补独立 transport regression：
+    - `tests/run_transport_regressions.sh`
+    - 用 fake proxy + real loopback server 锁住 “loopback 必须直连真实服务，不能穿代理” 这一行为
+- 当前仓库已经新增独立的 host E2E regression 面：
+  - `tests/obda_host_e2e_regressions.json`
+  - `tests/run_host_e2e_regressions.py`
+  - `tests/run_host_e2e_regressions.sh`
+  - 这套回归会自举本地 reasoning server、向 Claude Code 宿主注入 `OBDA_BASE_URL` / `OBDA_STATE_FILE`，并断言：
+    - `obda-query` skill 被选中
+    - 使用 bundled client
+    - 不退化成 repo 源码读取 / raw `curl` / 硬编码 `127.0.0.1:8000`
+  - 当前这套真实宿主 E2E 已覆盖并通过：
+    - anchored numeric status + solution follow-up
+    - abstract status fail-closed + clarification
+    - causal enumeration (`因为网络问题，哪些客户投诉了？`)
+  - question-mode 宿主协议现在进一步收紧为：
+    - 对自然语言问题，优先直接执行 question-mode `run`
+    - 由 `run` 内部完成 `/schema` 获取并满足 schema-first 规则
+    - 宿主不应在 normal question turn 中先单独调用一次 `schema` 再进入 `run`
+  - host E2E 现在还额外锁定 `planning_required` hard-stop 路径：
+    - 新增 `有哪些客户因为5G信号差而投诉了?` 用例
+    - 预期宿主只执行一次 `run`
+    - 不允许在 `planning_required` 后继续 `schema / schema --full / sample / sparql`
+- `run --answer-only` 现在是面向真实宿主 agent 的 compact answer 路径
+  - 它会去掉 parser / grounding / planner 的大块调试体，只保留回答用户和执行 stop-contract 必需的字段
+  - QUESTION shorthand 现在也默认落到同一条 compact answer 路径
+    - `run "question" --template ...`
+    - `run "question" --template ... --answer-only`
+    - `run "question" --template ... --json`
+    都不会在 normal user-answer turn 中返回整块 planner/debug JSON
+  - 对 `planning_required`，当前 compact contract 已明确收成硬停：
+    - `must_stop = true`
+    - 若同时提供 `final_user_reply`，真实宿主应直接返回该文本并停止
+    - `must_reply_verbatim = true`
+    - host-facing payload 在这种场景下只保留最小字段：
+      - `final_user_reply`
+      - `must_stop`
+      - `must_reply_verbatim`
+      - `forbidden_follow_up`
+      - `forbidden_reply_additions`
+    - 不再向真实宿主暴露 `question / template / query_family / message / recovery_policy / rules / next_action`
+    - 明确禁止后续：
+      - `run`
+      - `--plan-only`
+      - `question_rewrite_retry / semantic_rephrase_retry`
+      - `schema / schema --full / schema grep`
+      - `sample`
+      - `sparql`
+      - `repo_debugging`
+    - 明确禁止追加说明：
+      - `extra_explanation`
+      - `possible_reasons`
+      - `schema_suggestions`
+      - `ontology_term_examples`
+      - `question_rewrite_suggestions`
+  - 也就是说，`--plan-only` 现在只保留给“用户明确要求 planner 调试”的场景，不再是 normal host answer turn 的默认后续动作
+  - 为兼容真实 host 的老习惯，bare `run "question" --template ... --json` 现在也会默认落到同一条 compact answer 路径
+  - 当 `next_action = ask_user_for_clarification` 时，compact payload 还会显式加入 `agent_contract`
+    - 其中会声明 `must_stop`
+    - 并列出禁止继续执行的 follow-up 类别，例如 `schema --full`、`sample`、`sparql`、`rerun_with_metric_rewrite`
+- `OpenAICompatibleBackend` 用统一的 OpenAI-compatible transport 承接 Kimi / GLM / DeepSeek 这类 provider 的 HTTP 接入形态
+- 当 utterance-level model parse 出现 timeout / backend failure 时，parser facade 现在会保留 deterministic multi-unit decomposition，并把每个 unit 安全降回 deterministic bundle，而不是把整句压扁成单 unit
+- 也就是说，parser 的结构边界已经基本到位，但 `LLM-first` 仍属于“已接线、未默认、未完全稳定”的阶段
+
+这条路线比“直接让 LLM 替代当前 planner”更符合四原则，因为它把 LLM 放在了正确的位置：
+
+- 理解语言
+- 但不直接承诺 ontology 语义与执行计划
 
 ### 4.3.4.1 Family / Manifest / Binder 的关系
 
@@ -802,7 +1382,32 @@ LLM 更适合先产出类似这样的中间语义：
   - 如果有
   - 分别是什么
 
-因此在 planner 之上还需要增加一层更高阶的请求组织层：
+因此在 planner 之上还需要增加一个独立的 Language Intent Parser 层：
+
+- 它不负责 ontology grounding
+- 它只负责语言控制解析
+- 它的 deterministic lexical 只能服务于 minimal language-agnostic surface normalization：
+  - Unicode / 标点 / 空白归一化
+  - 数字字面量
+  - 符号比较器
+  - identifier-like literal / URI / local-name 形态
+  - span / offset 保留
+- 分句、条件依赖、引用解析不应再被写成 core lexical 规则能力，
+  而应主要由 LLM-first parser 负责
+- 它不能再用领域语义词表去直接决定：
+  - `lookup / explain / remediation`
+  - `family routing`
+  - `target / status / cause` 的 ontology 绑定
+- 如果 parser 需要识别 `lookup / explain / remediation`
+  - 也应来自通用 question-act grammar 或更强的语言意图模型
+  - 而不是来自 ontology/domain phrase table
+
+这个边界是四原则的核心：
+
+- parser core 只允许最小的 language-agnostic surface normalization
+- 语言理解主能力必须由 LLM-first parser 承担
+- 业务词表不能成为语义决策真源
+- 领域语义必须通过 grounding 进入 `Intent IR` 与 planner 主链
 
 1. Utterance Decomposer
    - 先把一整段输入拆成 `QuestionUnit[]`
@@ -849,6 +1454,19 @@ LLM 更适合先产出类似这样的中间语义：
        - reference binding
        - family routing
        共享同一组判定，而不是分别回头读 raw slots / regex flags
+   - 这里还要补一条硬约束：
+     - `Intent IR` 的生成首先应由 language intent parser 提供
+     - parser 可以输出：
+       - `operators`
+       - `references`
+       - `dependency`
+       - `comparators`
+       - `anchor forms`
+     - 但不应再靠领域语义词表直接输出：
+       - `role = score / name / description`
+       - `solution-like / explanation-like class`
+       - `status-like attribute`
+     - 这些都应交给 grounding 层处理
 
 3. Conversation State
    - 系统必须维护一个轻量的会话语义状态，而不是把每一句都当成全新问题
@@ -966,6 +1584,24 @@ LLM 更适合先产出类似这样的中间语义：
       现在共用这层 bootstrap 结构，而不是各自重复推 `operators / focus / constraints / references`
     - 这使得入口层从“raw slot 直接推语义”进一步收敛到
       `bootstrap candidates -> bootstrap intent view -> Intent IR / intent profile`
+  - `build_question_unit_intent_ir` / `derive_intent_profile` / `route_query_family`
+    现在开始共用一份 canonical `intent policy`
+    - 同一份策略会统一给出：
+      - `focus / operators / references / output`
+      - `scope_inheritance_allowed / semantic_inheritance_allowed / reference_binding_allowed`
+      - `family_bias / effective_template_bias`
+    - 这使 IR 构造、family routing、context inheritance 不再各自重算一套近似判定
+    - routing 所需的 `has_target_constraint / has_status_constraints / has_causal_constraints`
+      也开始优先从 canonical `constraints` 快照读取
+      而不是继续直接吃 bootstrap top-level semantic text
+  - `build_semantic_request_ir` 现在开始消费一层显式 `grounded constraint view`
+    - 这层会把 `requested_text` 与 manifest binding 后的 `effective_text / binding_terms / top_candidate`
+      分开表达
+    - 目标是把 `request_ir / candidate plan term generation / underconstrained gating`
+      从 raw semantic text 拼装，推进到 “requested semantics + grounded semantics” 双轨输入
+  - `build_family_slot_inputs` 也开始优先读取 canonical `constraints` 快照
+    - lowering 前的 `target / cause / action / status` slot text
+      不再继续直接依赖 bootstrap top-level semantic text
   - `derive_intent_profile` 已开始承担第一版 `intent policy`
     - 现在 family bias / effective template bias / family rationale
       已在 profile 层集中生成
@@ -978,20 +1614,40 @@ LLM 更适合先产出类似这样的中间语义：
     - 继承语义也会回写为 `bootstrap_candidates`，而不是只靠 top-level 兼容字段传递
   - `extract_question_slots` 现在已不再物化顶层语义文本
     - 输入阶段只保留：
-      `anchors / status_numeric_constraint / bootstrap_candidates / bootstrap_signals`
+      `anchors / status_numeric_constraint / bootstrap_candidates / bootstrap_operator_hints / bootstrap_signals`
     - 顶层 `cause_text / action_text / status_or_problem_text / target_text / result_hint`
       已从问题抽取入口移除
+    - 词法层现在开始显式收敛到 `collect_lexical_bootstrap_recall`
+      - 它负责 recall / normalization
+      - 不再直接承担 planner 决策职责
+      - recall 规则现在按有序 pipeline 执行，而不是散落在一个大函数里的 if/regex 分支
+      - 词法资源与 recall 规则现已独立到 `obda_lexical.py`
+      - planner core (`obda_api.py`) 只消费 lexical adapter 接口，不再直接声明这些词表/regex
+      - 但这仍然只是过渡态；长期目标不是保留一个“更干净的 lexical recall 模块”
+        而是把它继续收敛成独立的 language intent parser
+      - 长期允许保留的 deterministic lexical 仅限 minimal language-agnostic surface normalization：
+        - Unicode / 标点 / 空白归一化
+        - 数字字面量
+        - 符号比较器
+        - identifier-like literal / URI / local-name 形态
+        - span / offset 保留
+      - 长期不允许保留的 lexical 是领域语义词表：
+        - role patterns
+        - solution/explanation term tables
+        - semantic label suffix tables
+      - 否则即使它们被挪出 planner core，也仍然违反四原则
   - `conversation_state` 现在也显式保存 `bootstrap_candidates`
     - 这样 follow-up / inheritance / re-planning 都能继续基于同一份 bootstrap 语义候选，而不是回退到旧式顶层字段
   - 顶层兼容布尔位也已继续退场
     - `extract_question_slots` 不再物化顶层 `asks_solution / asks_explanation / status_check_requested`
-    - 这些控制位现在统一落在 `bootstrap_signals`
-    - `semantic_state_from_sources` / `bootstrap intent view` / `Intent IR` 会优先消费这份信号，而不是直接读取 top-level slot 布尔位
+    - 控制位主链现在统一落在 `bootstrap_operator_hints`
+    - `bootstrap_signals` 仅作为兼容输出保留，不再是语义决策的主输入
+    - `semantic_state_from_sources` / `bootstrap intent view` / `Intent IR` 会优先消费 operator hints，而不是直接读取兼容布尔位
   - `conversation_state` 也已不再保存顶层兼容语义文本或兼容布尔位
     - 不再持久化 `cause_text / action_text / status_or_problem_text / target_text / result_hint`
     - 不再持久化顶层 `asks_solution / asks_explanation / status_check_requested`
     - 继续保留的主链只有：
-      `anchors / bootstrap_candidates / bootstrap_signals / status_numeric_constraint / intent_ir / focus`
+      `anchors / bootstrap_candidates / bootstrap_operator_hints / bootstrap_signals / status_numeric_constraint / intent_ir / focus`
     - 这使 follow-up 继承真正依赖 `Intent IR + bootstrap_*`，而不是重新吃旧式物化 slot 字段
   - question-mode 执行态的 `planning_required` 现在也已收敛成明确的 fail-closed 契约
     - 正常执行态返回不再暴露可手工补写的 `plan_skeleton / required_fields`
@@ -1126,19 +1782,27 @@ LLM 更适合先产出类似这样的中间语义：
 
 ### 4.3.4.3 Bootstrap Heuristics 只允许作为过渡层
 
-当前实现里仍有一些人工定义的语言层启发式，例如：
+当前实现里仍有一些人工定义的 bootstrap 启发式，例如：
 
-- `ROLE_PATTERNS`
-- `CAUSE_PATTERN`
-- `WHICH_PATTERN`
-- `STATUS_CHECK_PATTERN`
-- `ASKS_FOR_PATTERN`
+- language-specific surface patterns
+- bounded lexical recall rules
+- 少量历史遗留 regex / matcher
 
 这些组件目前只允许被视为：
 
 - bootstrap only
-- 过渡期的 slot extraction / role hint
-- 帮助系统从“完全不会分流”过渡到“有最小 family / slot schema”
+- 过渡期的 surface hint extraction
+- 帮助系统从“完全不会分流”过渡到“有最小 parser schema / family slot schema”
+
+但需要明确：
+
+- 它们不是长期 contract
+- 它们不应继续扩大为多语言 parser 的主能力
+- 它们最多只能留在 parser adapter 的过渡层
+- 长期目标仍然是：
+  - minimal language-agnostic surface normalization
+  - LLM-first intent parsing
+  - repo-owned schema validation
 
 但它们不能被当成目标架构的一部分。
 
@@ -2400,19 +3064,194 @@ customer_hasPerception o perception_suggestsStrategy -> customer_suggestsStrateg
 - 已实现第一版独立的 semantic request IR builder，但目前仍主要用于 planner 调试视图和过渡态输出，尚未完全成为 lowering 的唯一输入
 - 已开始把 planner 的核心表示从 query shape / ad-hoc candidate 迁移到 node-based plan；目前 lowering 已覆盖 `causal_*` 与第一版 `enumeration/value-enumeration`，但仍未完全由统一 IR 驱动
 - manifest 目前已有 typed nodes，并已开始接入 bounded sample-derived `ValueNode` / value catalog
+- 已实现 repo-owned grounding contract（grounding bundle），并把 `slot_inputs / slot_bindings / grounded_constraints` 收敛为 planner/request IR 共享的正式接口
+- 已开始把 Grounder 的候选资格与传播规则收成独立 policy 层
+  - slot admissibility
+  - sample-value eligibility
+  - abstract status high-confidence gating
+  - relation propagation eligibility
+  - grounded candidate projection helpers
+- source/evidence/projection 选择现在已开始显式走 manifest-first：
+  - source class 初选优先吃结构信号，词面只保留 tie-break
+  - evidence class 选择优先吃 relation / grounded slot / 属性族兼容性
+  - projection / detail-fetch 已开始共享 manifest-aware property profile
+- bounded sample-derived `ValueNode` 现在已经显式带 provenance：
+  - sample value nodes 会标成低信任 `catalog_source`
+  - planner 只在确实需要 literal recall 的槽位才按需加载 sample catalog
+  - detail-fetch / projection 辅助链现在也改成 manifest-only first
+  - 只有当 property profile 明显太弱、无法稳定支撑展示字段选择时，才会加载一个很小的 bounded sample slice
+  - sample-derived value nodes 现在还必须通过更强的 literal-support 门槛才允许进入 binding 主竞争
+    - 对 `anchor_text` 基本要求 exact literal match
+    - 对 `cause/action/target` 至少要求 exact/overlap literal support，或足够强的 lexical + semantic 支撑
+  - sample/value catalog 现在更接近 recall 辅助，而不再是默认的 binding 决策真源
 - binder 目前已从纯 lexical 提升到 `lexical + local hashed-vector retrieval + slot-role prior + 结构先验` 的过渡实现
 - 当前的 local vector retrieval 是 dependency-light 的 hashed subword / token vector，不应误称为真正的 dense embedding retrieval
-- 当前代码中仍保留 `ROLE_PATTERNS / CAUSE_PATTERN / WHICH_PATTERN / STATUS_CHECK_PATTERN / ASKS_FOR_PATTERN` 这类 bootstrap heuristics；它们可作为过渡层存在，但不符合最终“无人工语义覆盖”的目标态
+- 当前应明确区分两类 lexical：
+  - 允许长期保留的：
+    - language-agnostic surface normalization
+    - 数字字面量
+    - 符号比较器
+    - identifier-like literal / URI / local-name 形态
+    - span / offset 保留
+    - 它们的职责只是提供最小 surface hints
+  - 不应继续保留的 domain-semantic lexical：
+    - `ROLE_PATTERNS`
+    - solution / explanation / semantic suffix 词表
+    - 任何直接把词面映射成 ontology role / class / property 的硬编码表
+- 也就是说，最终目标不是“零 lexical”，而是：
+  - `zero domain-semantic lexical in the decision path`
+  - `minimal language-agnostic deterministic surface layer`
+  - `LLM-first parser for language understanding`
+- 当前代码中仍有 language-specific lexical 过渡实现，但不应把它们误写成长期架构目标
 - `enumeration` 当前虽然已可通过通用 value-enumeration plan 执行，但 target/value property 的选择仍带有 role fallback（如 `type/description`），这应继续收敛到更强的 manifest binding，而不是扩展新的问句特化
 - explanation-style `enumeration` 现在已有第一版独立的 generic family / semantic contract：`explanation_enumeration`
   - 当前已支持从更大的模板收敛到 explanation operator，再 lowering 成 generic value-enumeration
   - 但这个 family 仍然依赖 bootstrap 级的现象抽取与 support-property 排序，距离完全 ontology-first / no-manual 的目标态还有差距
   - 当现象文本抽取失败，或 support binding 仍不足以形成可执行 lowering 时，正确行为依然是 fail closed
 - 还没有把“cause constraint / action constraint 是否同时编码”做成更高层语义校验
-- 还没有把 ontology-first grounding 做成 planner 内的独立层，统一落地类/属性/值约束
-- 实例值层目前只有 bounded sample-derived `ValueNode`，还没有升级成更完整的自动化 value catalog
-- 当前 grounding 已不再是纯词法匹配，但仍主要处于 `lexical + local hashed-vector + 少量既有 fallback` 的过渡态，距离真正的 ontology-first semantic grounding 还有明显差距
-- LLM 仍可能在 planner 未覆盖的 family 上退回自由探索
+- ontology-first grounding 虽已开始独立成层，但 binding 质量仍处在过渡态：
+  - 目前更像 `manifest-first + lexical/local-vector recall + bounded sample recall`
+  - 还没有完全升级成更强的统一 semantic grounding engine
+- 实例值层目前仍主要是 bounded sample-derived `ValueNode`
+  - 只是它们现在已被收紧为 on-demand、low-trust 的 literal recall 辅助
+  - 还没有升级成更完整的自动化 value catalog
+- model-backed parser 虽已接入，而且 parser facade 已支持 utterance-level model parse + unit projection
+  - 当前已经是 default-path-capable：
+    - parser 会按环境自动选择 `MockModelBackend` / `OpenAICompatibleBackend` / `AnthropicCompatibleCliBackend`
+    - 使用 `claude` CLI 作为 host，并通过 `ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY` 指向 Kimi Code 时
+    - 真实 Claude Code + Kimi Code 宿主链已能稳定跑通 host E2E regression
+  - 但它仍然保留 conservative fallback
+    - 这不是 provider 绑定特化，而是执行系统的通用 fail-closed 边界
+  - 当前 conservative fallback 已具备明确契约：
+    - 保留 deterministic surface decomposition
+    - 保留 multi-unit dependency DAG
+    - 避免在 utterance-level backend failure 后再对每个 unit 重复等待模型超时
+- 当前 backend 还具备更强的稳定化保护：
+    - parse failure 支持有界重试
+    - utterance-level `question_units` 与 deterministic hint 数量不一致时，会触发 `backend_projection_mismatch`
+    - mismatch 后会整体回落到 deterministic unit bundles，而不是把错误的 utterance parse 继续投影进 planner
+    - utterance-level model parse 即使返回了正确的 unit 数量，如果某些 unit 缺少 `question_acts / surface_constraints` 这类最小结构，也会触发 `backend_underfilled_parse`
+    - underfilled parse 同样会整体回落到 deterministic unit bundles，而不是把“结构上过弱”的 multi-unit parse 继续投影进 planner
+  - utterance-level parser output 的标准化现在也开始显式吃 `question_units_hint`
+    - 也就是说，multi-unit parse 在 normalize 阶段会优先保留 repo-owned decomposition 给出的 `unit_id / raw_text / normalized_text / reference markers`
+    - 而不是再把整句 fallback 粗暴地回灌到每个 unit 上
+    - 这条 hint-preserving normalize 现在也会保住 follow-up dependency
+      - 即使 model parse 漏掉了 `dependency`
+      - 只要 deterministic decomposition 已识别出 `如果有 / 这些 / 分别` 这类依赖关系，unit-level parser output 仍会继承它
+- 已补独立的 parser regression 面
+  - 现在除了 question-mode 端到端回归，还有 parser contract regression
+  - 至少覆盖：
+    - deterministic numeric/status parse
+    - deterministic multi-unit decomposition
+    - reference marker preservation
+    - Anthropic-compatible CLI backend unavailable / conservative fallback contract
+    - Anthropic-compatible CLI backend success / hybrid unit projection
+    - Anthropic-compatible CLI backend projection mismatch / conservative fallback contract
+    - Anthropic-compatible CLI backend underfilled parse / conservative fallback contract
+    - Anthropic-compatible CLI backend schema->json-only fallback contract
+    - Mock backend success / hybrid unit projection
+    - OpenAI-compatible backend success / hybrid unit projection
+    - protocol-marker-based backend autodetect
+- 已补独立的 grounding regression 面
+  - 不再只依赖 question-mode 端到端回归来间接覆盖 grounding
+  - 当前至少覆盖：
+    - sample-derived value admissibility
+    - abstract status candidate gating
+    - literal-overlap support for cause/target recall
+- 2026-04-08 这一轮又补了三条对“口语因果枚举”更关键、且仍保持通用性的收口：
+  - parser 侧：
+    - `有哪些客户因为5G信号差而投诉了` 这类问句现在会稳定拆成
+      - `result_hint=客户`
+      - `cause_text=5G信号差`
+      - `action_text=投诉`
+    - 这是 generic causal surface split，不是 telecom 词表特化
+  - property-profile 侧：
+    - schema/runtime 属性合并现在不会再让 runtime 的空值覆盖 schema 的有效元数据
+    - 这避免了 `event_发生时间` 这类 temporal 字段被误降成普通 text，从而错当 description/filter 列
+  - sample-value recall / lowering 侧：
+    - sample-derived value 现在允许通过 generic identifier-like fragment overlap 进入 recall
+      - 例如 `5G信号差` 可以落到 `5G信号不稳定`
+    - 对更短、更泛的口语 symptom phrase，grounded slot view 现在会在“弱 sample value 同分近邻”场景下保留 bounded `binding_terms`
+      - 例如 `信号差` 不再只保留单个 top sample value
+      - 而是可以一起携带 `信号弱，通话中断` / `5G信号不稳定` 这类同域近邻值进入 cause lowering
+      - 这依然是通用机制：按同 slot、同 class、同 property、同分近邻收束，而不是写死 telecom 词表
+    - 但弱的 action grounding（例如只靠低分 sample value 命中的 `投诉 -> 服务投诉`）不会再被自动当成 strict filter
+    - 也就是说，系统现在会区分：
+      - 可用于 cause recall 的弱近似命中
+      - 不可直接当成 hard constraint 的弱 action lowering
+    - 这条边界本质上是“弱 grounding 不应升级成强执行约束”，属于通用 planner discipline，不是业务特例
+  - low-information attribute guard 侧：
+    - free-text `cause_text / action_or_state_text` 现在会显式排除 key-like attribute
+      - 例如 `网络ID / 客户ID / 编码 / 标识 / 序号` 这类字段
+    - 这解决了抽象口语症状被 manifest attribute 误绑的问题
+      - `网络不好` 之前会被错误绑定到 `remediationstrategy_网络ID`
+      - 现在会优先回到 event sample values，再由 bounded multi-candidate recall 生成 `5G网络问题 / 网络覆盖问题 / 网络质量投诉`
+    - 这层仍然是通用性约束：限制低信息 key-field 进入 free-text semantic slot，而不是给某个行业写词表特判
+  - evidence-class ranking 侧：
+    - 弱 sample-value top candidate 不再自动给对应 class 满额 bonus
+      - 如果只是低分 sample hit，它只能拿 candidate-level bonus，不能把整条 evidence 主链强行拉偏
+    - causal evidence ranking 现在会偏好真正具备 `type + description` 文本角色的 class
+      - 并压低 `客户ID / 手机号 / 联系方式` 这类低信息字段冒充证据 role 的情况
+    - 这让 `因为网络问题，哪些客户投诉了？` 这类旧主路径稳定回到 `customer -> event`
+      - 而不是被 `workorder_工单内容` 或 `customerbehavior_手机号` 这类弱文本字段抢走
+- 因此像 `有哪些客户因为5G信号差而投诉了?` 这类问题，当前已经能从：
+  - `planning_required`
+  - 或 `empty_result`
+  稳定提升到：
+  - `customer -> event` 主链
+  - `event_事件类型 / event_事件描述` 文本过滤
+  - 并返回稳定结果（当前样本中命中 `CUST006 / EVT007 / 5G信号不稳定`）
+- 同一套 generic grounding 现在也覆盖更泛的 `有哪些客户因为信号差而投诉了?`
+  - 当前样本中会稳定返回：
+    - `CUST002 / EVT003 / 信号弱，通话中断`
+    - `CUST006 / EVT007 / 5G信号不稳定`
+  - 这说明系统已经从“只能吃强 literal”推进到“能处理短口语 symptom phrase 的 bounded multi-candidate recall”
+- 再往前一步，抽象口语症状 `有哪些客户因为网络不好而投诉了?` 当前也已可执行
+  - 当前样本中稳定返回：
+    - `CUST002 / EVT001 / 网络质量投诉 / 用户反映网速慢，视频卡顿`
+    - `CUST002 / EVT003 / 网络覆盖问题 / 信号弱，通话中断`
+    - `CUST006 / EVT007 / 5G网络问题 / 5G信号不稳定`
+  - 这说明系统已经不只是“吃到相似 symptom phrase”
+    - 还开始能处理更抽象的 quality complaint phrasing
+    - 且靠的是 generic slot admissibility + bounded value recall，而不是业务 hardcode
+- 同时，原始主路径 `因为网络问题，哪些客户投诉了？` 已恢复为 `customer -> event`
+  - 说明这轮增强不是“为了补新口语而牺牲旧主链”
+  - 而是把 planner 进一步推向：
+    - free-text slot 先过滤低信息 binding
+    - 弱 sample hit 只做 bounded recall，不直接统治 class ranking
+    - evidence class 由结构化文本角色来决定主证据优先级
+- Grounder policy 已经从 `obda_api.py` 中收口到独立模块
+  - `slot admissibility / sample eligibility / relation propagation / grounded candidate projection`
+    这些规则现在以 repo-owned policy 形式存在
+  - `obda_api.py` 主链已不再保留同一套本地重复实现
+- Planner compiler helper 已开始独立化
+  - `request IR` 装配、`node_plan` 构建、compiled-plan selection、planner summary
+    已从 `obda_api.py` 主体中收口到独立 compiler module
+  - planner 继续朝“只消费 Intent IR + Grounding Bundle + Request IR”的编译器方向演进
+- `build_semantic_query_planner(...)` 的当前执行主路径已切到独立 runtime
+  - `obda_api.py` 现在通过 thin wrapper 注入 helper/runtime callback
+  - legacy shim 与主 planner wrapper 现在共用 `_semantic_planner_runtime_callbacks()`
+    - semantic planner runtime 的 callback wiring 不再在两处重复维护
+  - planner 的候选 plan 搜索、enumeration/value-enumeration lowering、compiled-plan 选择
+    当前已由 repo-owned semantic planner runtime 承担
+  - `obda_api.py` 里的 legacy planner 入口现在也已显式收成 compatibility shim
+    - 当前即使经过 legacy 入口，也会直接委托给 semantic planner runtime
+    - 因此 legacy planner 已不再拥有独立执行语义
+    - `obda_api.py` 中原先那段 dead legacy planner 体已物理删除
+    - 当前剩余的 legacy planner 只是一层显式 shim，不再保留第二套 planner 主体
+- explanation-style follow-up enumeration 当前已收紧为“value projection first”
+  - explanation/result-set reference follow-up 的 `enumeration` lowering 不再默认附带 `paths` analysis
+  - 当主答案可由 value-enumeration 直接给出时，应返回 `ok`
+  - 不再因为缺少 source anchor 而把本来可回答的 follow-up 降成 `partial_success`
+- 已补独立的 planner regression 面
+  - 不再只依赖 question-mode 回归来间接观察 planner
+  - 当前至少覆盖：
+    - family routing / effective template
+    - plan executable vs planning_required
+    - fail-closed reason
+    - batch dependency DAG
+  - question-mode 端到端回归当前也已重新确认保持全绿（24 cases）
+- 因此当前系统已经明显接近目标架构，但仍不能把它误写成“LLM-first parser + ontology-first grounding 已完全落地”
 
 ### 任务 4.7：设计并实现 Presentation Layer
 

@@ -363,6 +363,26 @@ bash tests/run_question_regressions.sh causal_enumeration_network_complaints_run
   - planner 在缺少显式 `Intent IR` 时会先合成单 unit `Intent IR`
     - `routing` / `intent policy` 优先消费 `Intent IR`
     - raw slot 仅作为 bootstrap fallback
+  - `build_question_unit_intent_ir` / `derive_intent_profile` / `route_query_family`
+    现在开始共用一份 canonical `intent policy`
+    - 统一决定 `focus / operators / references / output`
+    - 以及 `inheritance` 与 `family bias`
+    - routing 相关判定现在优先读取 canonical `constraints` 快照
+      而不是直接依赖 bootstrap top-level semantic text
+  - `build_semantic_request_ir` 现在开始消费显式 `grounded constraint view`
+    - 会同时保留 `requested_text` 与 binding 后的 `effective_text / binding_terms / top_candidate`
+    - 让 `request_ir`、candidate term 生成、underconstrained 判定
+      不再只靠 raw semantic text 拼装
+  - `build_family_slot_inputs` 也开始优先读取 canonical `constraints` 快照
+    - lowering 前的 slot text 不再直接依赖 bootstrap top-level semantic text
+  - operator 控制位现在开始走 `bootstrap_operator_hints`
+    - `bootstrap_signals` 仅作为兼容输出保留，不再是语义决策主输入
+  - `extract_question_slots` 里的词法逻辑已开始显式下沉到 `collect_lexical_bootstrap_recall`
+    - 词法层保留用于 recall / normalization
+    - `Intent policy / grounding / routing / lowering` 不再与散乱 regex 分支直接耦合
+    - lexical recall 现在按有序 rule pipeline 执行，后续增删规则不需要再改一个大函数
+    - 词法资源与 recall 规则现已独立到 `obda_lexical.py`
+    - `obda_api.py` 不再声明或直接持有这些词表/regex，只通过 adapter 函数取词法结果
   - 条件性 follow-up 的 `Execution DAG` 跳过逻辑
   - 显式新锚点覆盖旧上下文
     - 只保留依赖条件，不继承上一题的语义约束
@@ -604,8 +624,11 @@ bash .agents/skills/obda-query/scripts/obda_api.sh causal CUST004
 - 如果没有 `recovery_hint`，就应 fail closed：停止、报告 planner 当前不支持或需澄清；不要切到手工 `sparql/sample` 探索链
 - 如果 `clarification_hint.kind = explicit_metric_or_threshold_required`，不要自行把抽象状态词改写成你猜测的显式阈值问句，例如把“低满意度”擅自改写成“满意度评分低于3分”
 - 这种显式 metric/threshold 只能来自用户原问题，或来自 planner 已经成功抽取出的 numeric constraint；否则就应该停下并请求更明确的表述
-- 如果同时返回 `next_action = ask_user_for_clarification`，就按该契约执行：直接向用户发澄清问题，并在当前轮停止调查，不要再切到 `/sample`、手写 `sparql` 或自行改写后的 `run`
+- 如果同时返回 `next_action = ask_user_for_clarification`，就按该契约执行：直接向用户发澄清问题，并在当前轮停止调查，不要再切到 `/sample`、手写 `sparql`、`schema --full | grep ...`，也不要从 schema 里替用户挑选候选指标
+- 如果 question-mode 执行后返回 `status = empty_result` 且带有 `recovery_hint`，这也只是“一次有界恢复”契约：只能围绕同一个问题、同一个指标、同一个阈值、同一个锚点做一次定向 grounding，然后把同一问题 rerun 一次
+- 不要把这种 `empty_result + recovery_hint` 当成“去 schema 里找别的相似指标再试一轮”的许可；如果 rerun 之后仍为空，就应报告无匹配并停止
 - 对 `13800138004的满意度评分是多少` 这类锚点 + 显式属性查值问题，question-mode 现在可直接走 `fact_lookup -> anchored_fact_lookup`，不需要外层 agent 再手工补一条事实查询
+- 对 `13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？` 这类数值状态 + 条件性目标追问，成功的 `causal_lookup` 结果现在会直接在 `presentation.target_details` 和 `presentation.related_terminal_details` 里给出终点实体、事件、工单等详情；只有当 parser 明确产出 `remediation` 意图时，结果才会额外填充 `presentation.solution_details`。不要再补 `/sample remediationstrategy` 或手写后续查询
 - 不要把 `planning_required` 当成“让 Agent 现场补完整个 `sparql.query` / `analysis.payload`”的信号
 
 这不是报错，而是在明确告诉你：

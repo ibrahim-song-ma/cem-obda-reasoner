@@ -55,6 +55,8 @@ Mandatory protocol:
 14. For `因为...哪些... / 哪些客户因为... / 哪些问题导致...` style questions, prefer `run --json` with template `causal_enumeration` instead of hand-built query chains. The shorthand form `run "<question>" --template ...` now routes through the semantic query planner and executes the locked plan automatically unless `--plan-only` is explicitly requested.
 15. Do not call `/causal/{id}` with non-customer IDs, do not hand-write `GET /analysis/paths?...` query strings, and do not confuse event-row counts with distinct customer counts.
 16. A failed client command does not by itself prove the local reasoning server is down; distinguish transport/client failures from server availability.
+17. If the bundled client returns `404` for `/schema`, treat it as a likely base-url/client mismatch first. Do not inspect repo source files or switch to hard-coded `127.0.0.1:8000` requests in the same user-answer turn.
+18. In a normal ontology/data answer turn, do not use `Read`, `Grep`, `Glob`, or repo-source `Bash` inspection after skill activation unless the user explicitly asked for repository debugging.
 
 Preferred server clients:
 

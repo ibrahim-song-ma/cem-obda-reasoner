@@ -18,6 +18,105 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
+from obda_intent_parser import (
+    parse_question_unit,
+)
+from obda_grounding_contracts import (
+    build_grounding_bundle,
+    grounding_candidates_for_slot,
+    grounding_constraint_effective_text,
+    grounding_constraint_record,
+    grounding_constraint_requested_text,
+    grounding_slot_binding_has_candidates,
+    grounding_slot_bindings,
+    grounding_slot_candidates_have_text_lowering,
+    grounding_slot_input_for_name,
+    grounding_slot_inputs,
+    grounding_top_attribute_candidate_for_slot,
+    grounding_top_value_candidate_for_slot,
+)
+from obda_grounding_policy import (
+    abstract_status_slot_requires_high_confidence as policy_abstract_status_slot_requires_high_confidence,
+    binding_terms_for_slot as policy_binding_terms_for_slot,
+    grounded_slot_candidates as policy_grounded_slot_candidates,
+    manifest_nodes_for_slot as policy_manifest_nodes_for_slot,
+    node_catalog_source as policy_node_catalog_source,
+    node_source_binding_adjustment as policy_node_source_binding_adjustment,
+    relation_propagated_source_candidates as policy_relation_propagated_source_candidates,
+    sample_value_candidate_allowed as policy_sample_value_candidate_allowed,
+    slot_binding_candidates as policy_slot_binding_candidates,
+    slot_binding_has_candidates as policy_slot_binding_has_candidates,
+    slot_input_for_name as policy_slot_input_for_name,
+    slot_input_requires_numeric_attribute_binding as policy_slot_input_requires_numeric_attribute_binding,
+    slot_inputs_need_value_catalog as policy_slot_inputs_need_value_catalog,
+    top_attribute_candidate_for_slot as policy_top_attribute_candidate_for_slot,
+    top_value_candidate_for_slot as policy_top_value_candidate_for_slot,
+)
+from obda_ir_contracts import (
+    build_intent_ir_from_policy,
+    build_request_ir_record,
+    constraint_snapshot_from_constraints,
+    intent_ir_constraint_snapshot,
+    intent_ir_focus_record,
+    intent_ir_operator_list,
+    intent_ir_operator_set,
+    intent_ir_output_record,
+    intent_ir_references_record,
+    request_ir_anchor_forms,
+    request_ir_effective_template,
+    request_ir_output_record,
+    request_ir_query_family,
+    request_ir_references_record,
+    request_ir_summary_record,
+)
+from obda_parser_contracts import attach_intent_irs_to_parser_output
+from obda_planner_compiler import (
+    build_node_plan as compiler_build_node_plan,
+    build_semantic_request_ir as compiler_build_semantic_request_ir,
+    select_compiled_plan as compiler_select_compiled_plan,
+    summarize_planner_result as compiler_summarize_planner_result,
+)
+from obda_semantic_planner_runtime import (
+    build_semantic_query_planner as runtime_build_semantic_query_planner,
+)
+from obda_question_mode_runtime import (
+    build_question_batch_run_response as runtime_build_question_batch_run_response,
+    build_question_mode_run_response as runtime_build_question_mode_run_response,
+    execute_question_batch_run as runtime_execute_question_batch_run,
+    execute_question_mode_run as runtime_execute_question_mode_run,
+)
+from obda_question_conversation_runtime import (
+    apply_resolved_reference_to_slots as runtime_apply_resolved_reference_to_slots,
+    build_conversation_state_entry as runtime_build_conversation_state_entry,
+    extract_focus_refs_from_response as runtime_extract_focus_refs_from_response,
+    resolve_reference_context as runtime_resolve_reference_context,
+)
+from obda_question_mode_single_runtime import (
+    build_single_question_mode_run_response as runtime_build_single_question_mode_run_response,
+    execute_single_question_mode_run as runtime_execute_single_question_mode_run,
+)
+from obda_run_plan_runtime import (
+    execute_run_plan as runtime_execute_run_plan,
+)
+from obda_cli_command_runtime import (
+    dispatch_cli_command,
+    handle_analysis_endpoint_cli_command,
+    handle_run_cli_command,
+)
+from obda_question_mode_contracts import (
+    apply_bounded_recovery_contract_to_question_response,
+    apply_fail_closed_contract_to_question_response,
+)
+from obda_lexical import (
+    bootstrap_candidate_text,
+    bootstrap_operator_hints,
+    derive_bootstrap_signals,
+    extract_which_tail,
+    is_numeric_range_uri,
+    register_bootstrap_candidate,
+    register_bootstrap_operator_hint,
+    split_constraint_terms,
+)
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -85,51 +184,7 @@ MAPPING_PO_ARRAY_PATTERN = re.compile(r"^\s{6}- \[(\S+),\s*([^,\]]+)(?:,\s*([^\]
 MAPPING_PREDICATE_PATTERN = re.compile(r"^\s{6}- p:\s+(\S+)\s*$")
 MAPPING_OBJECT_VALUE_PATTERN = re.compile(r"^\s{10}value:\s+(\S+)\s*$")
 MAPPING_OBJECT_IRI_TYPE_PATTERN = re.compile(r"^\s{10}type:\s+iri\s*$")
-CAUSE_PATTERN = re.compile(r"(?:因为|由于)(?P<cause>.+?)(?=(?:，|,|。|？|\?|哪些|哪个|哪位|哪类|谁|什么))")
-WHICH_PATTERN = re.compile(r"(哪些|哪个|哪位|哪类)(?P<tail>[^？?。]*)")
-STATUS_CHECK_PATTERN = re.compile(
-    r"(?:是否(?:存在|有)?|有无|有没有|是否为|是否属于)(?P<status>.+?)(?=(?:情况|问题|现象|记录|表现)?(?:[？?，,。]|如果|并|以及|$))"
-)
-ASKS_FOR_PATTERN = re.compile(
-    r"(?:有什么|有哪些|什么)(?P<target>.+?)(?=(?:[？?，,。]|如果|并|以及|$))"
-)
-LOOKUP_TARGET_PATTERN = re.compile(
-    r"(?P<target>.+?)(?:是|为)(?:多少|什么|几|啥)(?:[分次个元岁条项]?)(?:[？?，,。!！]*)$"
-)
-UTTERANCE_SPLIT_PATTERN = re.compile(r"[？?！!；;\n]+")
-CONDITIONAL_PREFIX_PATTERN = re.compile(
-    r"^(?P<prefix>如果有|如果存在|如果是|如果属于|如果命中|若有|若存在|若是|若属于|若命中|如果没有|如果不存在|如果不是|若没有|若不存在|若不是)[，,\s]*(?P<body>.*)$"
-)
-NUMERIC_COMPARISON_PATTERN = re.compile(
-    r"^(?P<attribute>.+?)\s*(?P<op>不超过|不高于|小于等于|<=|≤|至多|最多|小于|低于|少于|<|不少于|不低于|大于等于|>=|≥|至少|起码|高于|大于|超过|多于|>)\s*(?P<value>-?\d+(?:\.\d+)?)\s*$"
-)
-VALUE_SUFFIX_COMPARISON_PATTERN = re.compile(
-    r"^(?P<attribute>.+?)\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<op>以上|以下)\s*$"
-)
-IDENTIFIER_LITERAL_PATTERN = re.compile(r"(?<![A-Za-z0-9])\d{6,}(?![A-Za-z0-9])")
-URI_PATTERN = re.compile(r"https?://[^\s<>\"]+")
-RESOURCE_LOCAL_NAME_PATTERN = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9]+(?![A-Za-z0-9_])")
-ROLE_PATTERNS: Dict[str, List[str]] = {
-    "id": ["id", "编号", "编码"],
-    "name": ["姓名", "名称", "名字", "name"],
-    "type": ["类型", "类别", "type"],
-    "description": ["描述", "说明", "内容", "detail", "desc"],
-    "status": ["状态", "结果", "status"],
-    "phone": ["手机号", "手机号码", "电话号码", "联系方式", "phone", "mobile"],
-    "score": ["评分", "得分", "score"],
-}
-META_CLASS_NAMES = {
-    "Entity", "Object", "Action", "Logic", "Parameter", "ListType", "DictType",
-    "ontologyName", "Thing", "Nothing",
-}
-EVENT_LIKE_TERMS = ("事件", "工单", "记录", "行为")
-QUESTION_STOP_TERMS = ("问题", "情况", "相关", "原因", "导致", "由于", "因为")
-SEMANTIC_LABEL_SUFFIXES = ("问题", "事件", "行为", "策略", "分析", "评估", "网络", "产品", "服务")
-NUMERIC_XSD_MARKERS = ("int", "integer", "decimal", "float", "double", "long", "short")
-SOLUTION_REQUEST_TERMS = ("解决方案", "解决办法", "解决策略", "修复策略", "改善建议", "建议", "怎么办", "怎么解决")
-EXPLANATION_REQUEST_TERMS = ("为什么", "为何", "原因", "根因", "导致", "造成")
-EXPLANATION_TARGET_TERMS = ("原因", "根因", "成因", "理由")
-REFERENCE_MARKERS = ("这个", "这些", "它", "他们", "她们", "上述", "上面", "其中", "分别", "对应的", "相关的")
+MAPPING_VALUE_PLACEHOLDER_PATTERN = re.compile(r"\$\(([^)]+)\)")
 FAMILY_SLOT_SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
     "causal_enumeration": [
         {"name": "subject_text", "allowed_node_types": ["class"]},
@@ -149,6 +204,7 @@ FAMILY_SLOT_SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
     "anchored_fact_lookup": [
         {"name": "anchor_text", "allowed_node_types": ["attribute", "value"]},
         {"name": "target_text", "allowed_node_types": ["class", "attribute", "value"]},
+        {"name": "status_or_problem_text", "allowed_node_types": ["attribute", "value"]},
     ],
     "enumeration": [
         {"name": "target_text", "allowed_node_types": ["class", "attribute", "value"]},
@@ -165,37 +221,16 @@ FAMILY_SLOT_SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
 SEMANTIC_VECTOR_DIM = 384
 SEMANTIC_SIMILARITY_THRESHOLD = 0.24
 SEMANTIC_SCORE_SCALE = 6
-NUMERIC_COMPARISON_OPERATOR_MAP = {
-    "不超过": "lte",
-    "不高于": "lte",
-    "小于等于": "lte",
-    "<=": "lte",
-    "≤": "lte",
-    "至多": "lte",
-    "最多": "lte",
-    "以下": "lte",
-    "小于": "lt",
-    "低于": "lt",
-    "少于": "lt",
-    "<": "lt",
-    "不少于": "gte",
-    "不低于": "gte",
-    "大于等于": "gte",
-    ">=": "gte",
-    "≥": "gte",
-    "至少": "gte",
-    "起码": "gte",
-    "以上": "gte",
-    "高于": "gt",
-    "大于": "gt",
-    "超过": "gt",
-    "多于": "gt",
-    ">": "gt",
-}
-NUMERIC_OPERATOR_PREFIX_PATTERN = re.compile(
-    r"是否(?=(?:不超过|不高于|小于等于|<=|≤|至多|最多|小于|低于|少于|<|不少于|不低于|大于等于|>=|≥|至少|起码|高于|大于|超过|多于|>))"
-)
-NUMERIC_TRAILING_UNIT_PATTERN = re.compile(r"(?P<number>-?\d+(?:\.\d+)?)(?:[^\d\s]{1,3})$")
+
+
+def is_loopback_url(url: str) -> bool:
+    """Whether the URL targets a local loopback host that should bypass proxies."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    hostname = (parsed.hostname or "").strip().lower()
+    return hostname in {"127.0.0.1", "localhost", "::1"}
 
 
 def load_json_payload(payload: Optional[str], payload_file: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -220,7 +255,14 @@ def http_request_json(method: str, url: str, payload: Optional[Dict[str, Any]] =
         headers["Content-Type"] = "application/json"
 
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(request) as response:
+    if is_loopback_url(url):
+        # Claude Code / hosted agent shells can inject proxy settings that break
+        # localhost urllib traffic even when curl reaches the real server directly.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        response = opener.open(request)
+    else:
+        response = urllib.request.urlopen(request)
+    with response:
         raw = response.read().decode("utf-8")
 
     try:
@@ -243,6 +285,8 @@ def curl_request_json(method: str, url: str, payload: Optional[Dict[str, Any]] =
         f"\n{marker}%{{http_code}}",
         url,
     ]
+    if is_loopback_url(url):
+        command.extend(["--noproxy", "*"])
 
     if payload is not None:
         command.extend([
@@ -546,6 +590,23 @@ def infer_class_local_name_from_uri_template(uri_or_template: Any) -> Optional[s
     return None
 
 
+def mapping_template_variables(template: Any) -> List[str]:
+    """Extract placeholder variable names from one mapping IRI/value template."""
+    if not isinstance(template, str):
+        return []
+    return unique_preserve_order([
+        match.group(1)
+        for match in MAPPING_VALUE_PLACEHOLDER_PATTERN.finditer(template)
+        if isinstance(match.group(1), str) and match.group(1)
+    ])
+
+
+def mapping_value_source_column(value_expr: Any) -> Optional[str]:
+    """Extract the source column name from a simple mapping value like $(customer_id)."""
+    variables = mapping_template_variables(value_expr)
+    return variables[0] if len(variables) == 1 else None
+
+
 def load_runtime_object_property_catalog(mapping_file: Path = DEFAULT_MAPPING_FILE) -> Dict[str, List[Dict[str, Any]]]:
     """Build a lightweight runtime relation catalog from mapping.yaml."""
     cache = getattr(load_runtime_object_property_catalog, "_cache", None)
@@ -660,6 +721,8 @@ def load_runtime_data_property_catalog(mapping_file: Path = DEFAULT_MAPPING_FILE
     current_mapping = None
     subject_template = None
     subject_class = None
+    subject_variables: List[str] = []
+    mapping_property_order = 0
 
     for raw_line in resolved_path.read_text(encoding="utf-8").splitlines():
         match = MAPPING_NAME_PATTERN.match(raw_line)
@@ -667,11 +730,14 @@ def load_runtime_data_property_catalog(mapping_file: Path = DEFAULT_MAPPING_FILE
             current_mapping = match.group(1)
             subject_template = None
             subject_class = None
+            subject_variables = []
+            mapping_property_order = 0
             continue
 
         match = MAPPING_SUBJECT_PATTERN.match(raw_line)
         if match:
             subject_template = match.group(1)
+            subject_variables = mapping_template_variables(subject_template)
             continue
 
         match = MAPPING_TYPE_PATTERN.match(raw_line)
@@ -683,11 +749,12 @@ def load_runtime_data_property_catalog(mapping_file: Path = DEFAULT_MAPPING_FILE
         if not match:
             continue
 
-        predicate_uri, _, object_type = match.groups()
+        predicate_uri, object_value, object_type = match.groups()
         if predicate_uri == "a":
             continue
         local_name = uri_local_name(predicate_uri)
         domain_class = subject_class or infer_class_local_name_from_uri_template(subject_template)
+        source_column = mapping_value_source_column(object_value)
         if not local_name or not domain_class:
             continue
 
@@ -702,7 +769,11 @@ def load_runtime_data_property_catalog(mapping_file: Path = DEFAULT_MAPPING_FILE
             "range": object_type.strip() if isinstance(object_type, str) and object_type.strip() else None,
             "mapping": current_mapping,
             "validation_source": "mapping",
+            "mapping_order": mapping_property_order,
+            "source_column": source_column,
+            "subject_key": isinstance(source_column, str) and source_column in set(subject_variables),
         }
+        mapping_property_order += 1
 
     load_runtime_data_property_catalog._cache = {
         "path": str(resolved_path),
@@ -1336,47 +1407,6 @@ def rank_value_catalog_classes(
     return [class_name for class_name, _score in ranked[:limit]]
 
 
-def infer_class_hint_from_anchor(value: str) -> Optional[str]:
-    """Infer a class-like prefix from a URI or ontology-style local resource name."""
-    if is_uri_like(value):
-        return class_key_from_uri(value)
-    if "_" in value:
-        return value.split("_", 1)[0]
-    return None
-
-
-def detect_question_anchors(question_text: str) -> List[Dict[str, str]]:
-    """Detect strong anchors from natural language without question-specific planner logic."""
-    anchors: List[Dict[str, str]] = []
-    seen: Set[tuple[str, str]] = set()
-
-    def add_anchor(kind: str, value: str) -> None:
-        cleaned = value.strip(" ，,。；;()[]{}<>\"'")
-        if not cleaned:
-            return
-        key = (kind, cleaned)
-        if key in seen:
-            return
-        seen.add(key)
-        anchor = {"kind": kind, "value": cleaned}
-        class_hint = infer_class_hint_from_anchor(cleaned)
-        if isinstance(class_hint, str) and class_hint:
-            anchor["class_hint"] = class_hint
-        anchors.append(anchor)
-
-    for match in IDENTIFIER_LITERAL_PATTERN.finditer(question_text):
-        add_anchor("identifier_like_literal", match.group(0))
-    for match in URI_PATTERN.finditer(question_text):
-        add_anchor("resource_uri", match.group(0))
-    for match in RESOURCE_LOCAL_NAME_PATTERN.finditer(question_text):
-        candidate = match.group(0)
-        if URI_PATTERN.match(candidate):
-            continue
-        add_anchor("resource_local_name", candidate)
-
-    return anchors
-
-
 def normalized_terms_from_text(value: Any) -> List[str]:
     """Generate lexical terms from a schema label/local name."""
     if value is None:
@@ -1538,16 +1568,37 @@ def data_properties_by_domain(schema: Optional[Dict[str, Any]]) -> Dict[str, Lis
     return grouped
 
 
+def runtime_participating_classes() -> Set[str]:
+    """Return classes that participate in executable runtime mappings."""
+    classes: Set[str] = set()
+    for item in load_runtime_data_property_catalog().values():
+        domain = uri_local_name(item.get("domain"))
+        if isinstance(domain, str) and domain:
+            classes.add(domain)
+    for edges in load_runtime_object_property_catalog().values():
+        for edge in edges:
+            source_class = edge.get("source_class")
+            target_class = edge.get("target_class")
+            if isinstance(source_class, str) and source_class:
+                classes.add(source_class)
+            if isinstance(target_class, str) and target_class:
+                classes.add(target_class)
+    return classes
+
+
 def class_catalog(schema: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return user-facing ontology classes, excluding generic meta classes."""
+    """Return user-facing ontology classes that participate in executable runtime mappings."""
     if not isinstance(schema, dict):
         return []
+    participating_classes = runtime_participating_classes()
     results = []
     for item in schema.get("classes", []):
         if not isinstance(item, dict):
             continue
         local_name = item.get("local_name")
-        if not isinstance(local_name, str) or not local_name or local_name in META_CLASS_NAMES:
+        if not isinstance(local_name, str) or not local_name:
+            continue
+        if participating_classes and local_name not in participating_classes:
             continue
         results.append(item)
     return results
@@ -1612,21 +1663,20 @@ def build_semantic_manifest(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             continue
         label = item.get("label") or class_name
         attributes: List[Dict[str, Any]] = []
-        for prop in attributes_by_class.get(class_name, []):
+        for prop in merged_domain_properties(class_name, attributes_by_class):
             local_name = prop.get("local_name")
             if not isinstance(local_name, str) or not local_name:
                 continue
-            role_hints = [
-                role
-                for role in ROLE_PATTERNS
-                if property_role_score(prop, role) > 0
-            ]
+            role_hints: List[str] = []
             attributes.append({
                 "local_name": local_name,
                 "label": prop.get("label") or local_name,
                 "range": prop.get("range"),
                 "numeric": is_numeric_data_property(prop),
                 "validation_source": prop.get("validation_source", "schema"),
+                "mapping_order": prop.get("mapping_order"),
+                "source_column": prop.get("source_column"),
+                "subject_key": bool(prop.get("subject_key")),
                 "role_hints": role_hints,
             })
             attribute_node_id = f"{class_name}.{local_name}"
@@ -1635,12 +1685,16 @@ def build_semantic_manifest(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 attribute_nodes.append({
                     "node_type": "attribute",
                     "node_id": attribute_node_id,
+                    "catalog_source": "manifest_attribute",
                     "class_name": class_name,
                     "local_name": local_name,
                     "label": prop.get("label") or local_name,
                     "range": prop.get("range"),
                     "numeric": is_numeric_data_property(prop),
                     "validation_source": prop.get("validation_source", "schema"),
+                    "mapping_order": prop.get("mapping_order"),
+                    "source_column": prop.get("source_column"),
+                    "subject_key": bool(prop.get("subject_key")),
                     "role_hints": role_hints,
                     "search_text": " ".join(
                         part for part in [
@@ -1663,6 +1717,7 @@ def build_semantic_manifest(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             class_nodes.append({
                 "node_type": "class",
                 "node_id": class_name,
+                "catalog_source": "manifest_class",
                 "class_name": class_name,
                 "label": label,
                 "local_name": class_name,
@@ -1682,6 +1737,7 @@ def build_semantic_manifest(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             relation_nodes.append({
                 "node_type": "relation",
                 "node_id": relation_node_id,
+                "catalog_source": "manifest_relation",
                 "property": relation.get("property"),
                 "source_class": relation.get("source_class"),
                 "target_class": relation.get("target_class"),
@@ -1728,7 +1784,7 @@ def build_family_slot_inputs(
     family = routing.get("family")
     schema = FAMILY_SLOT_SCHEMAS.get(family, [])
     semantic_state = semantic_state_from_sources(slots, unit_intent_ir)
-    asks_explanation = bool(semantic_state.get("asks_explanation"))
+    constraint_snapshot = intent_ir_constraint_snapshot(unit_intent_ir)
     first_anchor = None
     anchors = semantic_state.get("anchors", [])
     if isinstance(anchors, list):
@@ -1738,36 +1794,46 @@ def build_family_slot_inputs(
                 break
 
     target_text = first_nonempty_text(
-        semantic_state.get("result_hint"),
+        constraint_snapshot.get("target_text"),
         semantic_state.get("target_text"),
     )
+    subject_text = first_nonempty_text(
+        constraint_snapshot.get("result_hint"),
+        semantic_state.get("result_hint"),
+        target_text,
+        question,
+    )
 
-    action_or_state_text = semantic_state.get("action_text")
-    if (
-        not isinstance(action_or_state_text, str) or not action_or_state_text.strip()
-    ) and family == "explanation_enumeration" and asks_explanation:
-        action_or_state_text = infer_explanation_subject_text(question, target_text)
-    if (
-        not isinstance(action_or_state_text, str) or not action_or_state_text.strip()
-    ) and family == "enumeration" and asks_explanation:
-        action_or_state_text = question
+    action_or_state_text = first_nonempty_text(
+        constraint_snapshot.get("action_text"),
+        semantic_state.get("action_text"),
+    )
+
+    cause_text = first_nonempty_text(
+        constraint_snapshot.get("cause_text"),
+        semantic_state.get("cause_text"),
+    )
+    status_or_problem_text = first_nonempty_text(
+        constraint_snapshot.get("status_or_problem_text"),
+        semantic_state.get("status_or_problem_text"),
+    )
+    status_numeric_constraint = constraint_snapshot.get("status_numeric_constraint")
+    if not isinstance(status_numeric_constraint, dict):
+        status_numeric_constraint = semantic_state.get("status_numeric_constraint")
+    if not isinstance(status_numeric_constraint, dict):
+        status_numeric_constraint = None
 
     values = {
-        "subject_text": (
-            semantic_state.get("result_hint")
-            or semantic_state.get("target_text")
-            or question
-        ),
+        "subject_text": subject_text,
         "target_text": target_text,
         "anchor_text": first_anchor.get("value") if isinstance(first_anchor, dict) else None,
-        "cause_text": semantic_state.get("cause_text"),
+        "cause_text": cause_text,
         "action_or_state_text": action_or_state_text,
         "status_or_problem_text": (
-            semantic_state.get("status_or_problem_text")
-            or semantic_state.get("target_text")
-            or semantic_state.get("action_text")
-            or semantic_state.get("cause_text")
-            or semantic_state.get("result_hint")
+            status_or_problem_text
+            or target_text
+            or action_or_state_text
+            or cause_text
         ),
     }
 
@@ -1793,10 +1859,10 @@ def build_family_slot_inputs(
                 if semantic_state.get("status_check_requested")
                 else "problem_text"
             )
-            if isinstance(semantic_state.get("status_numeric_constraint"), dict):
+            if isinstance(status_numeric_constraint, dict):
                 slot_input["comparison"] = {
-                    "op": semantic_state["status_numeric_constraint"].get("op"),
-                    "value": semantic_state["status_numeric_constraint"].get("value"),
+                    "op": status_numeric_constraint.get("op"),
+                    "value": status_numeric_constraint.get("value"),
                 }
         slot_inputs.append(slot_input)
     return slot_inputs
@@ -1834,90 +1900,20 @@ def slot_role_match_score(slot_input: Dict[str, Any], node: Dict[str, Any]) -> i
     if slot_name in ("subject_text", "target_text") and node_type == "class":
         return 6
     if slot_name == "anchor_text" and node_type == "attribute":
-        role_hints = set(node.get("role_hints", []))
         score = 4
-        if {"id", "phone"} & role_hints:
-            score += 4
+        if not bool(node.get("numeric")):
+            score += 1
         return score
     if slot_name in ("cause_text", "action_or_state_text", "status_or_problem_text") and node_type == "attribute":
-        role_hints = set(node.get("role_hints", []))
         score = 2
-        if {"type", "description", "status", "score"} & role_hints:
-            score += 3
         if slot_name == "status_or_problem_text" and slot_input.get("comparison") and bool(node.get("numeric")):
-            score += 2
+            score += 5
         return score
     if slot_name in ("cause_text", "action_or_state_text", "status_or_problem_text") and node_type == "value":
         return 3
     if slot_name == "target_text" and node_type == "relation":
         return 1
     return 0
-
-
-def slot_input_requires_status_like_binding(slot_input: Dict[str, Any]) -> bool:
-    """Whether a slot should bind only to generic status/score semantics."""
-    return (
-        slot_input.get("slot_name") == "status_or_problem_text"
-        and slot_input.get("constraint_mode") == "status_check"
-        and not isinstance(slot_input.get("comparison"), dict)
-    )
-
-
-def node_supports_status_like_binding(node: Dict[str, Any]) -> bool:
-    """Whether a manifest node can support a generic status-check constraint."""
-    if node.get("node_type") not in {"attribute", "value"}:
-        return False
-    role_hints = set(node.get("role_hints", []))
-    return bool({"status", "score"} & role_hints)
-
-
-def slot_input_requires_numeric_attribute_binding(slot_input: Dict[str, Any]) -> bool:
-    """Whether a slot must bind to numeric attributes because it carries an explicit comparator."""
-    return (
-        slot_input.get("slot_name") == "status_or_problem_text"
-        and isinstance(slot_input.get("comparison"), dict)
-    )
-
-
-def node_supports_numeric_attribute_binding(node: Dict[str, Any]) -> bool:
-    """Whether a manifest node can support explicit numeric comparison lowering."""
-    return node.get("node_type") == "attribute" and bool(node.get("numeric"))
-
-
-def slot_input_disallows_numeric_semantics(slot_input: Dict[str, Any]) -> bool:
-    """Whether a slot should exclude numeric nodes because it expresses free-text semantics."""
-    slot_name = slot_input.get("slot_name")
-    if slot_name in {"cause_text", "action_or_state_text"}:
-        return True
-    return (
-        slot_name == "status_or_problem_text"
-        and not isinstance(slot_input.get("comparison"), dict)
-    )
-
-
-def manifest_nodes_for_slot(manifest: Optional[Dict[str, Any]], slot_input: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Return manifest nodes that are admissible for a given semantic slot."""
-    if not isinstance(manifest, dict):
-        return []
-    allowed = set(slot_input.get("allowed_node_types", []))
-    nodes: List[Dict[str, Any]] = []
-    if "class" in allowed:
-        nodes.extend(manifest.get("class_nodes", []))
-    if "attribute" in allowed:
-        nodes.extend(manifest.get("attribute_nodes", []))
-    if "relation" in allowed:
-        nodes.extend(manifest.get("relation_nodes", []))
-    if "value" in allowed:
-        nodes.extend(manifest.get("value_nodes", []))
-    filtered = [node for node in nodes if isinstance(node, dict)]
-    if slot_input_requires_numeric_attribute_binding(slot_input):
-        filtered = [node for node in filtered if node_supports_numeric_attribute_binding(node)]
-        return filtered
-    if slot_input_requires_status_like_binding(slot_input):
-        filtered = [node for node in filtered if node_supports_status_like_binding(node)]
-    if slot_input_disallows_numeric_semantics(slot_input):
-        filtered = [node for node in filtered if not bool(node.get("numeric"))]
-    return filtered
 
 
 def bind_semantic_slots(manifest: Optional[Dict[str, Any]], slot_inputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1928,7 +1924,7 @@ def bind_semantic_slots(manifest: Optional[Dict[str, Any]], slot_inputs: List[Di
         if not isinstance(slot_text, str) or not slot_text:
             continue
         candidates = []
-        for node in manifest_nodes_for_slot(manifest, slot_input):
+        for node in policy_manifest_nodes_for_slot(manifest, slot_input):
             lexical_score = lexical_node_match_score(slot_text, node.get("search_text", ""))
             if (
                 node.get("node_type") == "value"
@@ -1939,19 +1935,33 @@ def bind_semantic_slots(manifest: Optional[Dict[str, Any]], slot_inputs: List[Di
             semantic_result = semantic_node_match_score(slot_text, node, manifest)
             semantic_score = float(semantic_result.get("semantic_score", 0.0) or 0.0)
             semantic_similarity = float(semantic_result.get("semantic_similarity", 0.0) or 0.0)
+            if not policy_sample_value_candidate_allowed(
+                slot_input,
+                node,
+                float(lexical_score),
+                float(semantic_similarity),
+            ):
+                continue
+            source_score = policy_node_source_binding_adjustment(
+                slot_input,
+                node,
+                float(lexical_score),
+                float(semantic_similarity),
+            )
             allow_anchor_capability_only = (
                 slot_input.get("slot_name") == "anchor_text"
                 and node.get("node_type") == "attribute"
                 and role_score > 0
             )
-            if lexical_score <= 0 and semantic_score <= 0 and not allow_anchor_capability_only:
+            if lexical_score <= 0 and semantic_score <= 0 and source_score <= 0 and not allow_anchor_capability_only:
                 continue
-            total_score = lexical_score + role_score + semantic_score
+            total_score = lexical_score + role_score + semantic_score + source_score
             if total_score <= 0:
                 continue
             candidates.append({
                 "node_type": node.get("node_type"),
                 "node_id": node.get("node_id"),
+                "catalog_source": policy_node_catalog_source(node),
                 "label": node.get("label") or node.get("local_name") or node.get("node_id"),
                 "class_name": node.get("class_name"),
                 "local_name": node.get("local_name"),
@@ -1963,6 +1973,7 @@ def bind_semantic_slots(manifest: Optional[Dict[str, Any]], slot_inputs: List[Di
                 "semantic_score": semantic_score,
                 "semantic_similarity": round(semantic_similarity, 4),
                 "slot_role_score": role_score,
+                "source_score": source_score,
                 "total_score": total_score,
             })
         candidates.sort(
@@ -1981,116 +1992,6 @@ def bind_semantic_slots(manifest: Optional[Dict[str, Any]], slot_inputs: List[Di
     return bindings
 
 
-def slot_relation_propagation_weight(slot_name: Optional[str]) -> float:
-    """Generic structural prior for propagating bound classes toward plausible source entities."""
-    weights = {
-        "anchor_text": 4.0,
-        "target_text": 1.5,
-        "cause_text": 1.25,
-        "action_or_state_text": 1.25,
-        "status_or_problem_text": 1.0,
-    }
-    return float(weights.get(slot_name, 0.0))
-
-
-def slot_relation_propagation_min_score(slot_name: Optional[str]) -> float:
-    """Minimum binding score required before a non-anchor slot can propagate structurally."""
-    if slot_name == "target_text":
-        return 5.0
-    return 6.0
-
-
-def relation_propagated_source_candidates(
-    manifest: Optional[Dict[str, Any]],
-    slot_bindings: List[Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
-    """Propagate bound attribute/value classes across manifest relations to form generic source candidates."""
-    if not isinstance(manifest, dict):
-        return {}
-
-    classes = {
-        item["class_name"]: item.get("label") or item["class_name"]
-        for item in manifest.get("classes", [])
-        if isinstance(item, dict) and isinstance(item.get("class_name"), str) and item.get("class_name")
-    }
-    relations = [
-        item for item in manifest.get("relations", [])
-        if isinstance(item, dict)
-        and isinstance(item.get("source_class"), str)
-        and item.get("source_class")
-        and isinstance(item.get("target_class"), str)
-        and item.get("target_class")
-    ]
-
-    propagated: Dict[str, Dict[str, Any]] = {}
-    for binding in slot_bindings:
-        if not isinstance(binding, dict):
-            continue
-        slot_name = binding.get("slot_name")
-        slot_weight = slot_relation_propagation_weight(slot_name)
-        if slot_weight <= 0:
-            continue
-
-        for candidate in binding.get("candidates", []):
-            if not isinstance(candidate, dict):
-                continue
-            if candidate.get("node_type") not in {"attribute", "value"}:
-                continue
-            bound_class = candidate.get("class_name")
-            if not isinstance(bound_class, str) or not bound_class:
-                continue
-
-            base_score = float(candidate.get("total_score", 0.0) or 0.0)
-            if slot_name != "anchor_text" and base_score < slot_relation_propagation_min_score(slot_name):
-                continue
-
-            direct_entry = {
-                "class_name": bound_class,
-                "label": classes.get(bound_class, bound_class),
-                "score": base_score + max(0.5, slot_weight - 0.5),
-                "binding_slot": slot_name,
-                "binding_source": "bound_class",
-            }
-            current_direct = propagated.get(bound_class)
-            if current_direct is None or direct_entry["score"] > float(current_direct.get("score", 0.0) or 0.0):
-                propagated[bound_class] = direct_entry
-
-            for relation in relations:
-                source_class = relation.get("source_class")
-                target_class = relation.get("target_class")
-                relation_bonus = 1.0 if relation.get("validation_source") == "mapping" else 0.0
-
-                if target_class == bound_class and isinstance(source_class, str) and source_class:
-                    score = base_score + slot_weight + 1.0 + relation_bonus
-                    current = propagated.get(source_class)
-                    if current is None or score > float(current.get("score", 0.0) or 0.0):
-                        propagated[source_class] = {
-                            "class_name": source_class,
-                            "label": classes.get(source_class, source_class),
-                            "score": score,
-                            "binding_slot": slot_name,
-                            "binding_source": "relation_source",
-                            "via_relation": relation.get("property"),
-                            "bound_class": bound_class,
-                        }
-
-                if slot_name == "anchor_text" and source_class == bound_class and isinstance(target_class, str) and target_class:
-                    score = base_score + relation_bonus - 2.0 + (slot_weight * 0.25)
-                    current = propagated.get(target_class)
-                    if current is None or score > float(current.get("score", 0.0) or 0.0):
-                        propagated[target_class] = {
-                            "class_name": target_class,
-                            "label": classes.get(target_class, target_class),
-                            "score": score,
-                            "binding_slot": slot_name,
-                            "binding_source": "relation_target",
-                            "via_relation": relation.get("property"),
-                            "bound_class": bound_class,
-                        }
-
-    return propagated
-
-
 def anchor_propagated_source_candidates(
     manifest: Optional[Dict[str, Any]],
     slot_bindings: List[Dict[str, Any]],
@@ -2101,7 +2002,7 @@ def anchor_propagated_source_candidates(
         for binding in slot_bindings
         if isinstance(binding, dict) and binding.get("slot_name") == "anchor_text"
     ]
-    return relation_propagated_source_candidates(manifest, anchor_only_bindings)
+    return policy_relation_propagated_source_candidates(manifest, anchor_only_bindings)
 
 
 def merge_source_candidates_from_slot_bindings(
@@ -2145,7 +2046,7 @@ def merge_source_candidates_from_slot_bindings(
                     "binding_slot": binding.get("slot_name"),
                 }
 
-    for class_name, item in relation_propagated_source_candidates(manifest, slot_bindings).items():
+    for class_name, item in policy_relation_propagated_source_candidates(manifest, slot_bindings).items():
         existing = merged.get(class_name)
         if existing is None or float(item.get("score", 0.0) or 0.0) > float(existing.get("score", 0.0) or 0.0):
             merged[class_name] = item
@@ -2251,12 +2152,17 @@ def load_sample_value_nodes(
                 class_value_nodes.append({
                     "node_type": "value",
                     "node_id": node_id,
+                    "catalog_source": "sample_value",
                     "class_name": class_name,
                     "property_local_name": prop_name,
                     "label": value_text,
                     "local_name": prop_name,
                     "role_hints": role_hints,
                     "numeric": bool(attr_node.get("numeric")) if isinstance(attr_node, dict) else False,
+                    "validation_source": attr_node.get("validation_source") if isinstance(attr_node, dict) else "sample",
+                    "mapping_order": attr_node.get("mapping_order") if isinstance(attr_node, dict) else None,
+                    "source_column": attr_node.get("source_column") if isinstance(attr_node, dict) else None,
+                    "subject_key": bool(attr_node.get("subject_key")) if isinstance(attr_node, dict) else False,
                     "range": attr_node.get("range") if isinstance(attr_node, dict) else None,
                     "search_text": " ".join(
                         part for part in [
@@ -2280,142 +2186,6 @@ def with_value_nodes(manifest: Optional[Dict[str, Any]], value_nodes: List[Dict[
     updated = dict(manifest)
     updated["value_nodes"] = [node for node in value_nodes if isinstance(node, dict)]
     return updated
-
-
-def binding_terms_for_slot(
-    slot_bindings: List[Dict[str, Any]],
-    slot_name: str,
-    limit: int = 5,
-    preferred_node_types: Optional[List[str]] = None,
-) -> List[str]:
-    """Extract lexical terms from top manifest bindings for a given semantic slot."""
-    terms: List[str] = []
-    base_minimum = 4.0 if slot_name in {"cause_text", "action_or_state_text"} else 6.0
-    for binding in slot_bindings:
-        if not isinstance(binding, dict) or binding.get("slot_name") != slot_name:
-            continue
-        candidates = [item for item in binding.get("candidates", []) if isinstance(item, dict)]
-        if not candidates:
-            continue
-        top_score = max(float(item.get("total_score", 0.0) or 0.0) for item in candidates)
-        minimum_score = max(base_minimum, top_score * 0.5)
-        filtered_candidates = [
-            candidate
-            for candidate in candidates
-            if float(candidate.get("total_score", 0.0) or 0.0) >= minimum_score
-        ]
-        if preferred_node_types:
-            preferred = [
-                candidate
-                for candidate in filtered_candidates
-                if candidate.get("node_type") in set(preferred_node_types)
-            ]
-            if preferred:
-                filtered_candidates = preferred
-        for candidate in filtered_candidates:
-            label = candidate.get("label")
-            if isinstance(label, str) and label:
-                terms.append(label)
-            if len(terms) >= limit:
-                break
-    return unique_preserve_order([term for term in terms if term])[:limit]
-
-
-def normalize_slot_text(text: Optional[str]) -> Optional[str]:
-    """Normalize extracted slot text without imposing domain-specific semantics."""
-    if not isinstance(text, str):
-        return None
-    cleaned = text.strip(" ，,。？?；;:：")
-    cleaned = re.sub(r"^(?:是否(?:存在|有)?|有无|有没有|是否为|是否属于)", "", cleaned).strip()
-    cleaned = re.sub(r"(?:的)?(?:情况|问题|现象|记录|表现)$", "", cleaned).strip()
-    cleaned = re.sub(r"(?:的)+$", "", cleaned).strip()
-    return cleaned or None
-
-
-def is_generic_explanation_target(text: Optional[str]) -> bool:
-    """Whether a target slot asks for a generic explanation category rather than a schema term."""
-    normalized = normalize_slot_text(text)
-    if not normalized:
-        return False
-    return normalized in EXPLANATION_TARGET_TERMS
-
-
-def infer_explanation_subject_text(question_text: str, target_text: Optional[str]) -> Optional[str]:
-    """Extract the phenomenon being explained from a generic explanation question."""
-    if not isinstance(question_text, str):
-        return None
-
-    cleaned = question_text.strip(" ，,。？?；;:：")
-    if not cleaned:
-        return None
-
-    if isinstance(target_text, str) and target_text.strip():
-        generic_target = target_text.strip()
-    else:
-        generic_target = ""
-
-    if generic_target and generic_target in cleaned:
-        cleaned = cleaned.replace(generic_target, " ", 1)
-    else:
-        cleaned = re.sub(r"(原因|根因|成因|理由)", " ", cleaned, count=1)
-
-    cleaned = cleaned.strip()
-    cleaned = re.sub(r"(?:有什?么|有哪些|是什么|是啥|什么)$", " ", cleaned).strip()
-    cleaned = re.sub(r"(?:分别|都)+$", " ", cleaned).strip()
-    cleaned = re.sub(r"^(?:为什么|为何)\s*", "", cleaned).strip()
-    cleaned = re.sub(r"^(?:引发|导致|造成|产生|出现|发生)\s*", "", cleaned).strip()
-    cleaned = re.sub(r"(?:的)+$", "", cleaned).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return normalize_slot_text(cleaned)
-
-
-def parse_numeric_literal(value: str) -> Any:
-    """Parse a numeric literal into int or float when possible."""
-    return float(value) if "." in value else int(value)
-
-
-def parse_numeric_constraint_text(text: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Extract a generic explicit numeric comparison from slot text."""
-    if not isinstance(text, str):
-        return None
-    cleaned = normalize_slot_text(text)
-    if not cleaned:
-        return None
-
-    candidate_texts = unique_preserve_order([
-        cleaned,
-        NUMERIC_OPERATOR_PREFIX_PATTERN.sub("", cleaned),
-        NUMERIC_TRAILING_UNIT_PATTERN.sub(r"\g<number>", cleaned),
-        NUMERIC_TRAILING_UNIT_PATTERN.sub(r"\g<number>", NUMERIC_OPERATOR_PREFIX_PATTERN.sub("", cleaned)),
-    ])
-
-    for candidate in candidate_texts:
-        if not isinstance(candidate, str) or not candidate.strip():
-            continue
-        match = NUMERIC_COMPARISON_PATTERN.match(candidate)
-        if match:
-            attribute_text = normalize_slot_text(match.group("attribute"))
-            operator = NUMERIC_COMPARISON_OPERATOR_MAP.get(match.group("op"))
-            if attribute_text and operator:
-                return {
-                    "attribute_text": attribute_text,
-                    "op": operator,
-                    "value": parse_numeric_literal(match.group("value")),
-                    "raw_text": candidate,
-                }
-
-        match = VALUE_SUFFIX_COMPARISON_PATTERN.match(candidate)
-        if match:
-            attribute_text = normalize_slot_text(match.group("attribute"))
-            operator = NUMERIC_COMPARISON_OPERATOR_MAP.get(match.group("op"))
-            if attribute_text and operator:
-                return {
-                    "attribute_text": attribute_text,
-                    "op": operator,
-                    "value": parse_numeric_literal(match.group("value")),
-                    "raw_text": candidate,
-                }
-    return None
 
 
 def build_explicit_metric_clarification_hint(semantic_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2455,211 +2225,198 @@ def build_explicit_metric_clarification_hint(semantic_state: Optional[Dict[str, 
     }
 
 
-def slot_binding_has_candidates(slot_bindings: List[Dict[str, Any]], slot_name: str) -> bool:
-    """Whether a slot binding produced at least one candidate node."""
-    for binding in slot_bindings:
-        if not isinstance(binding, dict) or binding.get("slot_name") != slot_name:
-            continue
-        candidates = binding.get("candidates", [])
-        if isinstance(candidates, list) and candidates:
-            return True
-    return False
+def semantic_state_text_for_slot(semantic_state: Dict[str, Any], slot_name: str) -> Optional[str]:
+    """Map one planner slot name to its semantic-state text source."""
+    if slot_name == "action_or_state_text":
+        return first_nonempty_text(semantic_state.get("action_text"))
+    if slot_name == "target_text":
+        return first_nonempty_text(semantic_state.get("target_text"))
+    return first_nonempty_text(semantic_state.get(slot_name))
 
 
-def slot_binding_candidates(slot_bindings: List[Dict[str, Any]], slot_name: str) -> List[Dict[str, Any]]:
-    """Return all candidates produced for a given slot."""
-    results: List[Dict[str, Any]] = []
-    for binding in slot_bindings:
-        if not isinstance(binding, dict) or binding.get("slot_name") != slot_name:
-            continue
-        for candidate in binding.get("candidates", []):
-            if isinstance(candidate, dict):
-                results.append(candidate)
-    return results
+def candidate_surface_label(candidate: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return a stable human-readable label for one bound manifest candidate."""
+    if not isinstance(candidate, dict):
+        return None
+    label = candidate.get("label")
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+
+    local_name = (
+        candidate.get("local_name")
+        or candidate.get("property_local_name")
+        or candidate.get("node_id")
+    )
+    if not isinstance(local_name, str) or not local_name.strip():
+        return None
+
+    cleaned = local_name.strip()
+    class_name = candidate.get("class_name")
+    if (
+        candidate.get("node_type") == "attribute"
+        and isinstance(class_name, str)
+        and class_name
+        and cleaned.startswith(f"{class_name}_")
+    ):
+        cleaned = cleaned[len(class_name) + 1:]
+    return cleaned or None
 
 
-def slot_candidates_have_text_lowering(
+def top_binding_candidate_for_slot(
     slot_bindings: List[Dict[str, Any]],
     slot_name: str,
+    preferred_node_types: Optional[List[str]] = None,
     slot_input: Optional[Dict[str, Any]] = None,
-) -> bool:
-    """Whether a slot has at least one binding that can be lowered as a text-style filter."""
-    abstract_status_check = (
-        isinstance(slot_input, dict)
-        and slot_input.get("constraint_mode") == "status_check"
-        and not isinstance(slot_input.get("comparison"), dict)
-    )
-    for candidate in slot_binding_candidates(slot_bindings, slot_name):
-        node_type = candidate.get("node_type")
-        role_hints = set(candidate.get("role_hints", []))
-        if abstract_status_check:
-            if node_type == "attribute" and not bool(candidate.get("numeric")) and {"status"} & role_hints:
-                return True
-            if node_type == "value" and not bool(candidate.get("numeric")) and {"status"} & role_hints:
-                return True
-            continue
-        if node_type == "value":
-            return True
-        if node_type == "attribute" and not bool(candidate.get("numeric")) and not {"score"} & role_hints:
-            return True
-    return False
-
-
-def slot_input_for_name(slot_inputs: List[Dict[str, Any]], slot_name: str) -> Optional[Dict[str, Any]]:
-    """Return the slot input definition for a given slot name."""
-    for slot_input in slot_inputs:
-        if isinstance(slot_input, dict) and slot_input.get("slot_name") == slot_name:
-            return slot_input
-    return None
-
-
-def top_attribute_candidate_for_slot(
-    slot_bindings: List[Dict[str, Any]],
-    slot_name: str,
-    class_name: Optional[str] = None,
-    numeric_only: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Return the highest-scoring attribute candidate for a slot, optionally scoped by class."""
-    candidates = []
-    for candidate in slot_binding_candidates(slot_bindings, slot_name):
-        if candidate.get("node_type") != "attribute":
-            continue
-        if class_name and candidate.get("class_name") != class_name:
-            continue
-        if numeric_only and not bool(candidate.get("numeric")):
-            continue
-        candidates.append(candidate)
+    """Return the strongest overall candidate for one slot."""
+    candidates = policy_grounded_slot_candidates(
+        slot_bindings,
+        slot_name,
+        slot_input=slot_input,
+        preferred_node_types=preferred_node_types,
+    )
     if not candidates:
         return None
-    candidates.sort(
-        key=lambda item: (
-            -float(item.get("total_score", 0.0) or 0.0),
-            -float(item.get("semantic_similarity", 0.0) or 0.0),
-            str(item.get("node_id", "")),
-        )
-    )
     return candidates[0]
 
 
-def top_value_candidate_for_slot(
+def fallback_sample_value_binding_terms_for_slot(
     slot_bindings: List[Dict[str, Any]],
     slot_name: str,
-    class_name: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Return the highest-scoring value candidate for a slot, optionally scoped by class."""
-    candidates = []
-    for candidate in slot_binding_candidates(slot_bindings, slot_name):
-        if candidate.get("node_type") != "value":
-            continue
-        if class_name and candidate.get("class_name") != class_name:
-            continue
-        candidates.append(candidate)
-    if not candidates:
-        return None
-    candidates.sort(
-        key=lambda item: (
-            -float(item.get("total_score", 0.0) or 0.0),
-            -float(item.get("semantic_similarity", 0.0) or 0.0),
-            str(item.get("node_id", "")),
-        )
-    )
-    return candidates[0]
-
-
-def split_utterance_into_segments(utterance: str) -> List[str]:
-    """Split a user utterance into coarse question-like segments."""
-    text = utterance.strip()
-    if not text:
+    top_candidate: Optional[Dict[str, Any]],
+    *,
+    slot_input: Optional[Dict[str, Any]] = None,
+    preferred_node_types: Optional[List[str]] = None,
+    limit: int = 5,
+) -> List[str]:
+    """Recover bounded near-tie sample-value labels when weak colloquial grounding has no manifest terms."""
+    if not isinstance(top_candidate, dict):
         return []
-
-    # Keep conditional follow-ups as separate units even when they are written inline.
-    text = re.sub(r"[，,]\s*(如果(?:有|存在|是|属于|命中|没有|不存在|不是)|若(?:有|存在|是|属于|命中|没有|不存在|不是))", r"。\1", text)
-    segments = []
-    for segment in UTTERANCE_SPLIT_PATTERN.split(text):
-        cleaned = segment.strip(" ，,。；;？！! ")
-        if cleaned:
-            segments.append(cleaned)
-    return segments
-
-
-def strip_conditional_prefix(text: str) -> Dict[str, Any]:
-    """Strip a leading conditional prefix and return dependency metadata."""
-    match = CONDITIONAL_PREFIX_PATTERN.match(text.strip())
-    if not match:
-        return {
-            "text": text.strip(),
-            "condition_type": None,
-            "condition_prefix": None,
-        }
-
-    prefix = match.group("prefix")
-    body = match.group("body").strip(" ，,。；;？！! ")
-    lowered_prefix = normalize_match_text(prefix)
-    if any(term in lowered_prefix for term in ("没有", "不存在", "不是")):
-        condition_type = "empty_or_false"
-    else:
-        condition_type = "non_empty_or_true"
-    return {
-        "text": body or text.strip(),
-        "condition_type": condition_type,
-        "condition_prefix": prefix,
-    }
-
-
-def detect_reference_markers(text: str) -> List[str]:
-    """Detect lightweight discourse references such as 这个/这些/分别."""
-    markers = []
-    for marker in REFERENCE_MARKERS:
-        if marker in text:
-            markers.append(marker)
-    return markers
+    if top_candidate.get("node_type") != "value" or top_candidate.get("catalog_source") != "sample_value":
+        return []
+    top_label = top_candidate.get("label")
+    if not isinstance(top_label, str) or not top_label.strip():
+        return []
+    top_score = float(top_candidate.get("total_score", 0.0) or 0.0)
+    top_class = top_candidate.get("class_name")
+    top_property = first_nonempty_text(
+        top_candidate.get("property_local_name"),
+        top_candidate.get("local_name"),
+    )
+    terms: List[str] = []
+    for candidate in policy_grounded_slot_candidates(
+        slot_bindings,
+        slot_name,
+        slot_input=slot_input,
+        preferred_node_types=preferred_node_types,
+    ):
+        if candidate.get("node_type") != "value" or candidate.get("catalog_source") != "sample_value":
+            continue
+        if candidate.get("class_name") != top_class:
+            continue
+        candidate_property = first_nonempty_text(
+            candidate.get("property_local_name"),
+            candidate.get("local_name"),
+        )
+        if candidate_property != top_property:
+            continue
+        candidate_score = float(candidate.get("total_score", 0.0) or 0.0)
+        if abs(candidate_score - top_score) > 0.01:
+            continue
+        label = candidate.get("label")
+        if isinstance(label, str) and label.strip():
+            terms.append(label)
+        if len(terms) >= limit:
+            break
+    return unique_preserve_order([term for term in terms if isinstance(term, str) and term.strip()])[:limit]
 
 
-def decompose_utterance_to_question_units(utterance: str) -> List[Dict[str, Any]]:
-    """Decompose one utterance into dependent QuestionUnits."""
-    segments = split_utterance_into_segments(utterance)
-    units: List[Dict[str, Any]] = []
-    active_condition: Optional[Dict[str, Any]] = None
-
-    for index, segment in enumerate(segments, start=1):
-        conditional = strip_conditional_prefix(segment)
-        unit_text = conditional["text"]
-        reference_markers = detect_reference_markers(unit_text)
-        explicit_anchors = detect_question_anchors(unit_text)
-        dependency: Optional[Dict[str, Any]] = None
-
-        if conditional["condition_type"] and units:
-            dependency = {
-                "depends_on": units[-1]["unit_id"],
-                "condition": conditional["condition_type"],
-                "source": "conditional_prefix",
-                "prefix": conditional["condition_prefix"],
-            }
-            active_condition = deepcopy(dependency)
-        elif reference_markers and units:
-            dependency = {
-                "depends_on": units[-1]["unit_id"],
-                "condition": "requires_previous_result",
-                "source": "reference_marker",
-            }
-        elif active_condition is not None and units and not explicit_anchors:
-            dependency = deepcopy(active_condition)
+def build_grounded_constraint_view(
+    slot_inputs: List[Dict[str, Any]],
+    slot_bindings: List[Dict[str, Any]],
+    semantic_state: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Build one grounded slot view that separates requested semantics from bound semantics."""
+    summaries: Dict[str, Dict[str, Any]] = {}
+    for slot_name in ("cause_text", "action_or_state_text", "status_or_problem_text", "target_text"):
+        slot_input = policy_slot_input_for_name(slot_inputs, slot_name)
+        requested_text = semantic_state_text_for_slot(semantic_state, slot_name)
+        preferred_node_types = None
+        if slot_name in ("cause_text", "action_or_state_text"):
+            preferred_node_types = ["value", "attribute"]
+        top_candidate = top_binding_candidate_for_slot(
+            slot_bindings,
+            slot_name,
+            preferred_node_types=preferred_node_types,
+            slot_input=slot_input,
+        )
+        if policy_abstract_status_slot_requires_high_confidence(slot_input):
+            binding_terms = []
+            for candidate in policy_grounded_slot_candidates(
+                slot_bindings,
+                slot_name,
+                slot_input=slot_input,
+                preferred_node_types=preferred_node_types,
+            )[:5]:
+                label = candidate.get("label")
+                if isinstance(label, str) and label:
+                    binding_terms.append(label)
         else:
-            active_condition = None
+            binding_terms = policy_binding_terms_for_slot(
+                slot_bindings,
+                slot_name,
+                preferred_node_types=preferred_node_types,
+            )
+            if not binding_terms:
+                binding_terms = fallback_sample_value_binding_terms_for_slot(
+                    slot_bindings,
+                    slot_name,
+                    top_candidate,
+                    slot_input=slot_input,
+                    preferred_node_types=preferred_node_types,
+                )
+        effective_text = first_nonempty_text(
+            binding_terms[0] if binding_terms else None,
+            candidate_surface_label(top_candidate),
+            requested_text,
+        )
+        summaries[slot_name] = {
+            "slot_name": slot_name,
+            "requested_text": requested_text,
+            "effective_text": effective_text,
+            "has_binding": bool(top_candidate),
+            "binding_terms": binding_terms,
+            "top_candidate": deepcopy(top_candidate) if isinstance(top_candidate, dict) else None,
+            "top_node_id": top_candidate.get("node_id") if isinstance(top_candidate, dict) else None,
+            "top_node_type": top_candidate.get("node_type") if isinstance(top_candidate, dict) else None,
+            "constraint_mode": slot_input.get("constraint_mode") if isinstance(slot_input, dict) else None,
+            "comparison": deepcopy(slot_input.get("comparison")) if isinstance(slot_input, dict) else None,
+        }
+    return summaries
 
-        units.append({
-            "unit_id": f"q{index}",
-            "text": unit_text,
-            "raw_text": segment,
-            "position": index,
-            "reference_markers": reference_markers,
-            "dependency": dependency,
-        })
 
-        if explicit_anchors:
-            active_condition = None
-
-    return units
+def grounded_constraint_terms(
+    grounded_slot: Optional[Dict[str, Any]],
+    schema: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Derive stable lexical terms from a grounded slot summary."""
+    if not isinstance(grounded_slot, dict):
+        return []
+    terms = []
+    effective_text = grounded_slot.get("effective_text")
+    requested_text = grounded_slot.get("requested_text")
+    if isinstance(effective_text, str) and effective_text.strip():
+        terms.extend(expand_constraint_terms(effective_text, schema))
+    if (
+        isinstance(requested_text, str)
+        and requested_text.strip()
+        and requested_text != effective_text
+    ):
+        terms.extend(expand_constraint_terms(requested_text, schema))
+    binding_terms = grounded_slot.get("binding_terms")
+    if isinstance(binding_terms, list):
+        terms.extend(str(item) for item in binding_terms if isinstance(item, str) and item.strip())
+    return unique_preserve_order([term for term in terms if term])
 
 
 def unit_needs_inherited_context(unit: Dict[str, Any], slots: Dict[str, Any]) -> bool:
@@ -2734,57 +2491,20 @@ def merge_inherited_slots(
         for key in ("cause_text", "action_text", "status_or_problem_text", "target_text", "result_hint"):
             inherit_scalar(key)
 
-    bootstrap_signals = merged.setdefault("bootstrap_signals", {})
-    if not isinstance(bootstrap_signals, dict):
-        bootstrap_signals = {}
-        merged["bootstrap_signals"] = bootstrap_signals
-
     if (
         allow_semantic_inheritance
         and inherited_state.get("status_check_requested")
-        and not bootstrap_signals.get("status_check_requested")
     ):
-        bootstrap_signals["status_check_requested"] = True
+        register_bootstrap_operator_hint(merged, "status_check", "inherited_context")
         inherited_keys.append("status_check_requested")
 
-    if inherited_state.get("asks_solution") and not bootstrap_signals.get("asks_solution"):
-        bootstrap_signals["asks_solution"] = True
+    if inherited_state.get("asks_solution"):
+        register_bootstrap_operator_hint(merged, "remediation", "inherited_context")
         inherited_keys.append("asks_solution")
 
     merged["inherited_context_keys"] = unique_preserve_order(inherited_keys)
+    sync_bootstrap_signals(merged)
     return merged
-
-
-def intent_ir_constraint_snapshot(unit_intent_ir: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Extract a small, typed constraint view from Intent IR for downstream policy decisions."""
-    snapshot: Dict[str, Any] = {}
-    if not isinstance(unit_intent_ir, dict) or not isinstance(unit_intent_ir.get("constraints"), list):
-        return snapshot
-    for item in unit_intent_ir.get("constraints", []):
-        if not isinstance(item, dict):
-            continue
-        slot_name = item.get("slot")
-        if not isinstance(slot_name, str) or not slot_name:
-            continue
-        text_value = item.get("text")
-        if isinstance(text_value, str) and text_value.strip():
-            snapshot[slot_name] = text_value.strip()
-            continue
-        constraint_value = item.get("constraint")
-        if isinstance(constraint_value, dict):
-            snapshot[slot_name] = deepcopy(constraint_value)
-    return snapshot
-
-
-def intent_ir_operator_set(unit_intent_ir: Optional[Dict[str, Any]]) -> Set[str]:
-    """Return a normalized operator set from Intent IR."""
-    if not isinstance(unit_intent_ir, dict) or not isinstance(unit_intent_ir.get("operators"), list):
-        return set()
-    return {
-        item
-        for item in unit_intent_ir.get("operators", [])
-        if isinstance(item, str) and item
-    }
 
 
 def first_nonempty_text(*values: Any) -> Optional[str]:
@@ -2798,46 +2518,11 @@ def first_nonempty_text(*values: Any) -> Optional[str]:
     return None
 
 
-def register_bootstrap_candidate(
-    slots: Dict[str, Any],
-    slot_name: str,
-    value: Optional[str],
-    source: str,
-) -> None:
-    """Register one bootstrap semantic candidate for later Intent IR construction."""
-    if not isinstance(slots, dict) or not isinstance(slot_name, str) or not slot_name:
+def sync_bootstrap_signals(slots: Dict[str, Any]) -> None:
+    """Keep legacy bootstrap_signals in sync as a compatibility output only."""
+    if not isinstance(slots, dict):
         return
-    cleaned = normalize_slot_text(value)
-    if not cleaned:
-        return
-    candidate_store = slots.setdefault("bootstrap_candidates", {})
-    if not isinstance(candidate_store, dict):
-        candidate_store = {}
-        slots["bootstrap_candidates"] = candidate_store
-    bucket = candidate_store.setdefault(slot_name, [])
-    if not isinstance(bucket, list):
-        bucket = []
-        candidate_store[slot_name] = bucket
-    candidate = {"text": cleaned, "source": source}
-    if candidate not in bucket:
-        bucket.append(candidate)
-
-
-def bootstrap_candidate_text(slots: Dict[str, Any], slot_name: str) -> Optional[str]:
-    """Return the primary bootstrap candidate text for one semantic slot."""
-    candidate_store = slots.get("bootstrap_candidates")
-    if not isinstance(candidate_store, dict):
-        return None
-    bucket = candidate_store.get(slot_name)
-    if not isinstance(bucket, list):
-        return None
-    for item in bucket:
-        if not isinstance(item, dict):
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-    return None
+    slots["bootstrap_signals"] = derive_bootstrap_signals(slots)
 
 
 def semantic_state_from_sources(
@@ -2846,12 +2531,11 @@ def semantic_state_from_sources(
 ) -> Dict[str, Any]:
     """Normalize semantic control bits from Intent IR first, with bootstrap candidates as fallback."""
     constraint_snapshot = intent_ir_constraint_snapshot(unit_intent_ir)
+    intent_operator_list = intent_ir_operator_list(unit_intent_ir)
     intent_operators = intent_ir_operator_set(unit_intent_ir)
-    focus = (
-        unit_intent_ir.get("focus")
-        if isinstance(unit_intent_ir, dict) and isinstance(unit_intent_ir.get("focus"), dict)
-        else None
-    )
+    bootstrap_operators = bootstrap_operator_hints(slots)
+    resolved_operator_set = intent_operators or set(bootstrap_operators)
+    focus = intent_ir_focus_record(unit_intent_ir)
     focus_kind = (
         focus.get("kind")
         if isinstance(focus, dict) and isinstance(focus.get("kind"), str) and focus.get("kind")
@@ -2870,33 +2554,21 @@ def semantic_state_from_sources(
     if not isinstance(numeric_constraint, dict):
         numeric_constraint = None
 
-    references = (
-        unit_intent_ir.get("references")
-        if isinstance(unit_intent_ir, dict) and isinstance(unit_intent_ir.get("references"), dict)
-        else None
-    )
+    references = intent_ir_references_record(unit_intent_ir)
     resolved_reference = None
     if isinstance(references, dict) and isinstance(references.get("resolved"), dict):
         resolved_reference = deepcopy(references.get("resolved"))
     elif isinstance(slots.get("resolved_reference"), dict):
         resolved_reference = deepcopy(slots.get("resolved_reference"))
 
-    bootstrap_signals = slots.get("bootstrap_signals")
-    if not isinstance(bootstrap_signals, dict):
-        bootstrap_signals = {}
-
     return {
         "constraint_snapshot": constraint_snapshot,
-        "operators": [
-            item
-            for item in (
-                unit_intent_ir.get("operators", [])
-                if isinstance(unit_intent_ir, dict) and isinstance(unit_intent_ir.get("operators"), list)
-                else []
-            )
-            if isinstance(item, str) and item
-        ],
-        "operator_set": intent_operators,
+        "operators": (
+            list(intent_operator_list)
+            if intent_operator_list
+            else list(bootstrap_operators)
+        ),
+        "operator_set": resolved_operator_set,
         "focus": deepcopy(focus) if isinstance(focus, dict) else None,
         "focus_kind": focus_kind,
         "anchors": anchors,
@@ -2923,23 +2595,28 @@ def semantic_state_from_sources(
             bootstrap_candidate_text(slots, "result_hint"),
         ),
         "status_numeric_constraint": deepcopy(numeric_constraint),
-        "status_check_requested": "status_check" in intent_operators or isinstance(numeric_constraint, dict) or bool(bootstrap_signals.get("status_check_requested")),
-        "asks_solution": "remediation" in intent_operators or bool(bootstrap_signals.get("asks_solution")),
-        "asks_explanation": "explain" in intent_operators or bool(bootstrap_signals.get("asks_explanation")),
+        "status_check_requested": "status_check" in resolved_operator_set or isinstance(numeric_constraint, dict),
+        "asks_solution": "remediation" in resolved_operator_set,
+        "asks_explanation": "explain" in resolved_operator_set,
         "resolved_reference": resolved_reference,
     }
 
 
-def build_bootstrap_intent_view(
+def build_intent_policy(
     slots: Dict[str, Any],
     template: str,
+    unit_intent_ir: Optional[Dict[str, Any]] = None,
     question_unit: Optional[Dict[str, Any]] = None,
     resolved_reference: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build a shared bootstrap intent view before a full Intent IR exists."""
-    semantic_state = semantic_state_from_sources(slots)
-    dependency = question_unit.get("dependency") if isinstance(question_unit, dict) and isinstance(question_unit.get("dependency"), dict) else None
-    reference_markers = (
+    """Build one canonical intent policy shared by IR construction, routing, and inheritance."""
+    semantic_state = semantic_state_from_sources(slots, unit_intent_ir)
+    dependency = (
+        question_unit.get("dependency")
+        if isinstance(question_unit, dict) and isinstance(question_unit.get("dependency"), dict)
+        else None
+    )
+    question_unit_markers = (
         list(question_unit.get("reference_markers", []))
         if isinstance(question_unit, dict) and isinstance(question_unit.get("reference_markers"), list)
         else list(slots.get("reference_markers", []))
@@ -2947,110 +2624,137 @@ def build_bootstrap_intent_view(
         else []
     )
 
-    operators: List[str] = []
-    if semantic_state.get("status_check_requested"):
-        operators.append("status_check")
-    if semantic_state.get("asks_explanation") or isinstance(semantic_state.get("cause_text"), str):
-        operators.append("explain")
-    if semantic_state.get("asks_solution"):
-        operators.append("remediation")
-    if template in ("enumeration", "causal_enumeration"):
-        operators.append("enumerate")
-    if not operators:
-        operators.append("lookup")
-    operators = unique_preserve_order(operators)
-
-    if semantic_state.get("has_anchor"):
-        focus_kind = "anchored_entity"
-        focus = {"kind": "anchored_entity", "anchors": deepcopy(semantic_state.get("anchors", []))}
-    elif dependency or reference_markers:
-        focus_kind = "previous_result_reference"
-        focus = {"kind": "previous_result_reference"}
-    elif template in ("enumeration", "causal_enumeration"):
-        focus_kind = "result_set"
-        focus = {"kind": "result_set"}
-    else:
-        focus_kind = "implicit"
-        focus = {"kind": "implicit"}
-
-    constraints: List[Dict[str, Any]] = []
-    for key in ("cause_text", "action_text", "status_or_problem_text", "target_text", "result_hint"):
-        value = first_nonempty_text(bootstrap_candidate_text(slots, key), semantic_state.get(key))
-        if isinstance(value, str) and value.strip():
-            constraints.append({"slot": key, "text": value})
-    if isinstance(semantic_state.get("status_numeric_constraint"), dict):
-        constraints.append({
-            "slot": "status_numeric_constraint",
-            "constraint": deepcopy(semantic_state["status_numeric_constraint"]),
-        })
-
-    if template == "causal_enumeration":
-        output_shape = "entity_set"
-    elif template == "enumeration":
-        output_shape = "rows"
-    else:
-        output_shape = "entity"
-
-    references: Dict[str, Any] = {
-        "markers": reference_markers,
-    }
-    if isinstance(dependency, dict):
-        references["depends_on"] = dependency.get("depends_on")
-        references["condition"] = dependency.get("condition")
-    if isinstance(resolved_reference, dict) and not semantic_state.get("has_explicit_anchor"):
-        references["resolved"] = deepcopy(resolved_reference)
-
-    return {
-        "focus": focus,
-        "focus_kind": focus_kind,
-        "operators": operators,
-        "constraints": constraints,
-        "output": {"shape": output_shape},
-        "output_shape": output_shape,
-        "references": references,
-    }
-
-
-def derive_intent_profile(
-    slots: Dict[str, Any],
-    template: str,
-    unit_intent_ir: Optional[Dict[str, Any]] = None,
-    question_unit: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Build a minimal profile that lets routing depend on Intent IR before templates."""
-    semantic_state = semantic_state_from_sources(slots, unit_intent_ir)
-    bootstrap_intent = build_bootstrap_intent_view(slots, template, question_unit=question_unit)
-    operators = (
-        list(unit_intent_ir.get("operators", []))
-        if isinstance(unit_intent_ir, dict) and isinstance(unit_intent_ir.get("operators"), list)
-        else list(bootstrap_intent.get("operators", []))
-    )
-    focus = unit_intent_ir.get("focus") if isinstance(unit_intent_ir, dict) else None
+    focus = intent_ir_focus_record(unit_intent_ir)
     if isinstance(focus, dict) and isinstance(focus.get("kind"), str) and focus.get("kind"):
         focus_kind = focus.get("kind")
     else:
-        focus_kind = bootstrap_intent.get("focus_kind")
-    output = unit_intent_ir.get("output") if isinstance(unit_intent_ir, dict) else bootstrap_intent.get("output")
+        if semantic_state.get("has_anchor"):
+            focus_kind = "anchored_entity"
+            focus = {"kind": "anchored_entity", "anchors": deepcopy(semantic_state.get("anchors", []))}
+        elif dependency or question_unit_markers:
+            focus_kind = "previous_result_reference"
+            focus = {"kind": "previous_result_reference"}
+        elif template in ("enumeration", "causal_enumeration"):
+            focus_kind = "result_set"
+            focus = {"kind": "result_set"}
+        else:
+            focus_kind = "implicit"
+            focus = {"kind": "implicit"}
+
+    constraints = (
+        deepcopy(unit_intent_ir.get("constraints"))
+        if isinstance(unit_intent_ir, dict) and isinstance(unit_intent_ir.get("constraints"), list)
+        else None
+    )
+    if constraints is None:
+        constraints = []
+        for key in ("cause_text", "action_text", "status_or_problem_text", "target_text", "result_hint"):
+            value = first_nonempty_text(bootstrap_candidate_text(slots, key), semantic_state.get(key))
+            if isinstance(value, str) and value.strip():
+                constraints.append({"slot": key, "text": value})
+        if isinstance(semantic_state.get("status_numeric_constraint"), dict):
+            constraints.append({
+                "slot": "status_numeric_constraint",
+                "constraint": deepcopy(semantic_state["status_numeric_constraint"]),
+            })
+    constraint_snapshot = constraint_snapshot_from_constraints(constraints)
+    cause_constraint_text = first_nonempty_text(
+        constraint_snapshot.get("cause_text"),
+        semantic_state.get("cause_text"),
+    )
+    action_constraint_text = first_nonempty_text(
+        constraint_snapshot.get("action_text"),
+        semantic_state.get("action_text"),
+    )
+    status_constraint_text = first_nonempty_text(
+        constraint_snapshot.get("status_or_problem_text"),
+        semantic_state.get("status_or_problem_text"),
+    )
+    target_constraint_text = first_nonempty_text(
+        constraint_snapshot.get("target_text"),
+        semantic_state.get("target_text"),
+    )
+    result_hint_text = first_nonempty_text(
+        constraint_snapshot.get("result_hint"),
+        semantic_state.get("result_hint"),
+    )
+    status_numeric_constraint = constraint_snapshot.get("status_numeric_constraint")
+    if not isinstance(status_numeric_constraint, dict):
+        status_numeric_constraint = semantic_state.get("status_numeric_constraint")
+    if not isinstance(status_numeric_constraint, dict):
+        status_numeric_constraint = None
+    template_enumeration_fallback_allowed = (
+        template in ("enumeration", "causal_enumeration")
+        and not (semantic_state.get("has_anchor") and semantic_state.get("status_check_requested"))
+    )
+
+    operators = intent_ir_operator_list(unit_intent_ir)
+    if not operators:
+        if semantic_state.get("status_check_requested"):
+            operators.append("status_check")
+        if semantic_state.get("asks_explanation") or isinstance(cause_constraint_text, str):
+            operators.append("explain")
+        if semantic_state.get("asks_solution"):
+            operators.append("remediation")
+        if template_enumeration_fallback_allowed:
+            operators.append("enumerate")
+        if not operators:
+            operators.append("lookup")
+    operators = unique_preserve_order([str(item) for item in operators if isinstance(item, str) and item])
+
+    output = intent_ir_output_record(unit_intent_ir)
+    if not isinstance(output, dict):
+        if template == "causal_enumeration" and template_enumeration_fallback_allowed:
+            output_shape = "entity_set"
+        elif template == "enumeration" and template_enumeration_fallback_allowed:
+            output_shape = "rows"
+        else:
+            output_shape = "entity"
+        output = {"shape": output_shape}
     output_shape = (
         output.get("shape")
-        if isinstance(output, dict) and isinstance(output.get("shape"), str) and output.get("shape")
+        if isinstance(output.get("shape"), str) and output.get("shape")
         else None
     )
-    references = unit_intent_ir.get("references") if isinstance(unit_intent_ir, dict) else bootstrap_intent.get("references")
-    dependency_condition = (
-        references.get("condition")
-        if isinstance(references, dict) and isinstance(references.get("condition"), str)
-        else None
-    )
+
+    references = intent_ir_references_record(unit_intent_ir)
+    if not isinstance(references, dict):
+        references = {
+            "markers": question_unit_markers,
+        }
+        if isinstance(dependency, dict):
+            references["depends_on"] = dependency.get("depends_on")
+            references["condition"] = dependency.get("condition")
     reference_markers = (
         list(references.get("markers", []))
-        if isinstance(references, dict) and isinstance(references.get("markers"), list)
-        else []
+        if isinstance(references.get("markers"), list)
+        else question_unit_markers
+    )
+    if "markers" not in references:
+        references["markers"] = reference_markers
+    if isinstance(dependency, dict):
+        references.setdefault("depends_on", dependency.get("depends_on"))
+        references.setdefault("condition", dependency.get("condition"))
+    if not isinstance(references.get("resolved"), dict):
+        fallback_reference = resolved_reference if isinstance(resolved_reference, dict) else semantic_state.get("resolved_reference")
+        if isinstance(fallback_reference, dict) and not semantic_state.get("has_explicit_anchor"):
+            references["resolved"] = deepcopy(fallback_reference)
+
+    dependency_condition = (
+        references.get("condition")
+        if isinstance(references.get("condition"), str) and references.get("condition")
+        else None
     )
     has_semantic_content = any(
-        isinstance(semantic_state.get(key), str) and str(semantic_state.get(key)).strip()
-        for key in ("cause_text", "action_text", "status_or_problem_text", "target_text", "result_hint")
-    ) or isinstance(semantic_state.get("status_numeric_constraint"), dict)
+        isinstance(value, str) and value.strip()
+        for value in (
+            cause_constraint_text,
+            action_constraint_text,
+            status_constraint_text,
+            target_constraint_text,
+            result_hint_text,
+        )
+    ) or isinstance(status_numeric_constraint, dict)
     has_explicit_anchor = bool(semantic_state.get("has_explicit_anchor"))
     wants_context = bool(
         dependency_condition
@@ -3070,16 +2774,12 @@ def derive_intent_profile(
     reference_binding_allowed = focus_kind == "previous_result_reference" and not has_explicit_anchor
     explain_requested = "explain" in operators
     enumerate_requested = "enumerate" in operators
-    has_explanation_phenomenon = bool(semantic_state.get("action_text"))
-    has_causal_constraints = bool(
-        semantic_state.get("cause_text") or semantic_state.get("status_or_problem_text")
-    )
-    has_status_constraints = bool(
-        semantic_state.get("status_or_problem_text")
-        or isinstance(semantic_state.get("status_numeric_constraint"), dict)
-    )
-    has_target_constraint = bool(semantic_state.get("target_text"))
-    generic_explanation_target = is_generic_explanation_target(semantic_state.get("target_text"))
+    has_explanation_phenomenon = bool(action_constraint_text)
+    has_causal_constraints = bool(cause_constraint_text or status_constraint_text)
+    has_status_constraints = bool(status_constraint_text or isinstance(status_numeric_constraint, dict))
+    has_target_constraint = bool(target_constraint_text)
+    generic_explanation_target = False
+    previous_result_explanation = focus_kind == "previous_result_reference" and enumerate_requested and explain_requested
     family_bias = template
     effective_template_bias = template
     family_rationale: List[str] = []
@@ -3105,19 +2805,18 @@ def derive_intent_profile(
             family_bias = "anchored_causal_lookup"
             effective_template_bias = "causal_lookup"
             family_rationale.extend(["smaller_family_reroute", "anchored_lookup_operator"])
+        elif (
+            focus_kind != "anchored_entity"
+            and enumerate_requested
+            and explain_requested
+            and (previous_result_explanation or not has_causal_constraints)
+            and (generic_explanation_target or has_explanation_phenomenon or has_target_constraint)
+        ):
+            family_bias = "explanation_enumeration"
+            effective_template_bias = "enumeration"
+            family_rationale.extend(["smaller_family_reroute", "explanation_operator"])
         else:
-            if (
-                focus_kind != "anchored_entity"
-                and enumerate_requested
-                and explain_requested
-                and not has_causal_constraints
-                and (generic_explanation_target or has_explanation_phenomenon or has_target_constraint)
-            ):
-                family_bias = "explanation_enumeration"
-                effective_template_bias = "enumeration"
-                family_rationale.extend(["smaller_family_reroute", "explanation_operator"])
-            else:
-                family_bias = "causal_enumeration"
+            family_bias = "causal_enumeration"
     elif template == "enumeration":
         if (
             focus_kind == "anchored_entity"
@@ -3131,21 +2830,26 @@ def derive_intent_profile(
             family_bias = "anchored_causal_lookup"
             effective_template_bias = "causal_lookup"
             family_rationale.extend(["smaller_family_reroute", "anchored_lookup_operator"])
+        elif (
+            enumerate_requested
+            and explain_requested
+            and (generic_explanation_target or has_explanation_phenomenon or has_target_constraint)
+        ):
+            family_bias = "explanation_enumeration"
+            family_rationale.append("explanation_operator")
         else:
-            if (
-                enumerate_requested
-                and explain_requested
-                and (generic_explanation_target or has_explanation_phenomenon or has_target_constraint)
-            ):
-                family_bias = "explanation_enumeration"
-                family_rationale.append("explanation_operator")
-            else:
-                family_bias = "enumeration"
+            family_bias = "enumeration"
 
     return {
-        "operators": unique_preserve_order([str(item) for item in operators if isinstance(item, str) and item]),
+        "semantic_state": semantic_state,
+        "constraint_snapshot": constraint_snapshot,
+        "focus": focus,
         "focus_kind": focus_kind,
+        "operators": operators,
+        "constraints": constraints,
+        "output": output,
         "output_shape": output_shape,
+        "references": references,
         "scope_inheritance_allowed": scope_inheritance_allowed,
         "semantic_inheritance_allowed": semantic_inheritance_allowed,
         "reference_binding_allowed": reference_binding_allowed,
@@ -3161,6 +2865,57 @@ def derive_intent_profile(
     }
 
 
+def build_bootstrap_intent_view(
+    slots: Dict[str, Any],
+    template: str,
+    question_unit: Optional[Dict[str, Any]] = None,
+    resolved_reference: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a shared bootstrap intent view before a full Intent IR exists."""
+    policy = build_intent_policy(
+        slots,
+        template,
+        question_unit=question_unit,
+        resolved_reference=resolved_reference,
+    )
+    return {
+        "focus": deepcopy(policy.get("focus", {})),
+        "focus_kind": policy.get("focus_kind"),
+        "operators": list(policy.get("operators", [])),
+        "constraints": deepcopy(policy.get("constraints", [])),
+        "output": deepcopy(policy.get("output", {})),
+        "output_shape": policy.get("output_shape"),
+        "references": deepcopy(policy.get("references", {})),
+    }
+
+
+def derive_intent_profile(
+    slots: Dict[str, Any],
+    template: str,
+    unit_intent_ir: Optional[Dict[str, Any]] = None,
+    question_unit: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a minimal profile that lets routing depend on Intent IR before templates."""
+    policy = build_intent_policy(slots, template, unit_intent_ir=unit_intent_ir, question_unit=question_unit)
+    return {
+        "operators": list(policy.get("operators", [])),
+        "focus_kind": policy.get("focus_kind"),
+        "output_shape": policy.get("output_shape"),
+        "scope_inheritance_allowed": bool(policy.get("scope_inheritance_allowed")),
+        "semantic_inheritance_allowed": bool(policy.get("semantic_inheritance_allowed")),
+        "reference_binding_allowed": bool(policy.get("reference_binding_allowed")),
+        "explain_requested": bool(policy.get("explain_requested")),
+        "enumerate_requested": bool(policy.get("enumerate_requested")),
+        "has_explanation_phenomenon": bool(policy.get("has_explanation_phenomenon")),
+        "has_causal_constraints": bool(policy.get("has_causal_constraints")),
+        "has_target_constraint": bool(policy.get("has_target_constraint")),
+        "generic_explanation_target": bool(policy.get("generic_explanation_target")),
+        "family_bias": policy.get("family_bias"),
+        "effective_template_bias": policy.get("effective_template_bias"),
+        "family_rationale": list(policy.get("family_rationale", [])),
+    }
+
+
 def build_question_unit_intent_ir(
     unit: Dict[str, Any],
     slots: Dict[str, Any],
@@ -3168,21 +2923,18 @@ def build_question_unit_intent_ir(
     resolved_reference: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a lightweight Intent IR for one QuestionUnit."""
-    bootstrap_intent = build_bootstrap_intent_view(
+    policy = build_intent_policy(
         slots,
         template,
         question_unit=unit,
         resolved_reference=resolved_reference,
     )
 
-    return {
-        "unit_id": unit.get("unit_id"),
-        "focus": deepcopy(bootstrap_intent.get("focus", {})),
-        "operators": list(bootstrap_intent.get("operators", [])),
-        "constraints": deepcopy(bootstrap_intent.get("constraints", [])),
-        "output": deepcopy(bootstrap_intent.get("output", {})),
-        "references": deepcopy(bootstrap_intent.get("references", {})),
-    }
+    intent_ir = build_intent_ir_from_policy(unit, policy)
+    parser_output = slots.get("parser_output")
+    if isinstance(parser_output, dict):
+        attach_intent_irs_to_parser_output(parser_output, [intent_ir])
+    return intent_ir
 
 
 def extract_question_slots(
@@ -3192,124 +2944,8 @@ def extract_question_slots(
     question_unit: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Extract a small set of semantic slots from a natural-language question."""
-    question_text = question.strip()
-    anchors = detect_question_anchors(question_text)
-    asks_solution = any(term in question_text for term in SOLUTION_REQUEST_TERMS)
-    asks_explanation = any(term in question_text for term in EXPLANATION_REQUEST_TERMS)
-    slots: Dict[str, Any] = {
-        "question": question_text,
-        "template": template,
-        "question_type": template,
-        "anchors": anchors,
-        "has_anchor": bool(anchors),
-        "has_explicit_anchor": bool(anchors),
-        "status_numeric_constraint": None,
-        "bootstrap_signals": {
-            "asks_solution": asks_solution,
-            "asks_explanation": asks_explanation,
-            "status_check_requested": False,
-        },
-        "bootstrap_candidates": {},
-    }
-
-    stripped_question_text = question_text
-    for anchor in anchors:
-        if isinstance(anchor, dict) and isinstance(anchor.get("value"), str) and anchor.get("value"):
-            stripped_question_text = stripped_question_text.replace(anchor["value"], " ")
-    stripped_question_text = normalize_slot_text(stripped_question_text) or question_text
-    global_numeric_constraint = parse_numeric_constraint_text(stripped_question_text)
-    if isinstance(global_numeric_constraint, dict):
-        register_bootstrap_candidate(
-            slots,
-            "status_or_problem_text",
-            global_numeric_constraint.get("attribute_text"),
-            "question_numeric_attribute",
-        )
-        slots["status_numeric_constraint"] = global_numeric_constraint
-        if isinstance(slots.get("bootstrap_signals"), dict):
-            slots["bootstrap_signals"]["status_check_requested"] = True
-
-    cause_match = CAUSE_PATTERN.search(question_text)
-    if cause_match:
-        register_bootstrap_candidate(
-            slots,
-            "cause_text",
-            cause_match.group("cause").strip(" ，,。？? "),
-            "cause_pattern",
-        )
-
-    status_match = STATUS_CHECK_PATTERN.search(question_text)
-    if status_match:
-        status_text = normalize_slot_text(status_match.group("status"))
-        if status_text:
-            numeric_constraint = slots.get("status_numeric_constraint")
-            if not isinstance(numeric_constraint, dict):
-                numeric_constraint = parse_numeric_constraint_text(status_text)
-            if isinstance(numeric_constraint, dict):
-                register_bootstrap_candidate(
-                    slots,
-                    "status_or_problem_text",
-                    numeric_constraint.get("attribute_text"),
-                    "status_numeric_attribute",
-                )
-                slots["status_numeric_constraint"] = numeric_constraint
-            else:
-                register_bootstrap_candidate(
-                    slots,
-                    "status_or_problem_text",
-                    status_text,
-                    "status_pattern",
-                )
-            if isinstance(slots.get("bootstrap_signals"), dict):
-                slots["bootstrap_signals"]["status_check_requested"] = True
-
-    which_match = WHICH_PATTERN.search(question_text)
-    if which_match:
-        tail = which_match.group("tail").strip(" ，,。？? ")
-        register_bootstrap_candidate(slots, "result_hint", tail, "which_pattern")
-        tail = re.sub(r"(了|过|呢|吗|呀|啊)+$", "", tail).strip()
-        for suffix in ("投诉", "报修", "办理", "购买", "订购", "使用", "反馈", "关联", "命中"):
-            if tail.endswith(suffix):
-                register_bootstrap_candidate(slots, "action_text", suffix, "which_suffix")
-                break
-        if bootstrap_candidate_text(slots, "action_text") is None and tail:
-            compact_tail = re.sub(r"(客户|用户|事件|工单|策略|感知|产品|网络|套餐)+", "", tail).strip()
-            compact_tail = re.sub(r"(了|过|的)$", "", compact_tail).strip()
-            if compact_tail:
-                register_bootstrap_candidate(slots, "action_text", compact_tail, "which_compact_tail")
-
-    asks_for_match = ASKS_FOR_PATTERN.search(question_text)
-    if asks_for_match and not bootstrap_candidate_text(slots, "target_text"):
-        target_text = normalize_slot_text(asks_for_match.group("target"))
-        if target_text and target_text not in SOLUTION_REQUEST_TERMS:
-            register_bootstrap_candidate(slots, "target_text", target_text, "asks_for_pattern")
-
-    reference_markers = question_unit.get("reference_markers", []) if isinstance(question_unit, dict) else []
-    if (
-        bootstrap_candidate_text(slots, "target_text") is None
-        and not asks_explanation
-        and not bool(reference_markers)
-        and not bool(slots.get("bootstrap_signals", {}).get("status_check_requested"))
-    ):
-        lookup_question_text = stripped_question_text.strip(" ，,。？?!！;；")
-        lookup_match = LOOKUP_TARGET_PATTERN.search(lookup_question_text)
-        if lookup_match:
-            target_text = normalize_slot_text(lookup_match.group("target"))
-            if target_text and "的" in target_text:
-                target_text = normalize_slot_text(target_text.split("的")[-1])
-            if target_text and target_text not in SOLUTION_REQUEST_TERMS:
-                register_bootstrap_candidate(slots, "target_text", target_text, "lookup_target_pattern")
-
-    if (
-        asks_explanation
-        and bootstrap_candidate_text(slots, "action_text") is None
-        and bootstrap_candidate_text(slots, "cause_text") is None
-        and bootstrap_candidate_text(slots, "status_or_problem_text") is None
-    ):
-        explanation_subject = infer_explanation_subject_text(question_text, bootstrap_candidate_text(slots, "target_text"))
-        if explanation_subject:
-            register_bootstrap_candidate(slots, "action_text", explanation_subject, "explanation_subject")
-
+    parse_bundle = parse_question_unit(question, template, question_unit=question_unit)
+    slots = dict(parse_bundle.get("slots", {}))
     return merge_inherited_slots(slots, inherited_context, question_unit or {})
 
 
@@ -3377,51 +3013,165 @@ def property_surface_text(prop: Dict[str, Any], domain_class: Optional[str] = No
     return " ".join(parts)
 
 
-def property_role_score(prop: Dict[str, Any], role: str) -> int:
-    """Score a data property against a semantic role such as id/name/type."""
-    text = " ".join(
-        part for part in [str(prop.get("label", "")), str(prop.get("local_name", ""))] if part
+def property_value_family(prop: Dict[str, Any]) -> str:
+    """Classify one data property by runtime/value shape instead of lexical hints."""
+    range_uri = prop.get("range")
+    if is_numeric_range_uri(range_uri):
+        return "numeric"
+    if isinstance(range_uri, str):
+        lowered = range_uri.lower()
+        if "bool" in lowered:
+            return "boolean"
+        if "date" in lowered or "time" in lowered:
+            return "temporal"
+    return "text"
+
+
+def merged_domain_properties(
+    domain_class: str,
+    domain_properties: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Merge schema/runtime views of one class's properties without dropping stronger schema metadata."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    for prop in domain_properties.get(domain_class, []):
+        if not isinstance(prop, dict):
+            continue
+        local_name = prop.get("local_name")
+        if not isinstance(local_name, str) or not local_name:
+            continue
+        existing = merged.get(local_name, {})
+        updated = dict(existing)
+        for key, value in prop.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value:
+                continue
+            updated[key] = value
+        merged[local_name] = updated
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            int(item.get("mapping_order", 10**9) or 10**9),
+            str(item.get("local_name", "")),
+        ),
     )
-    normalized = normalize_match_text(text)
-    score = 0
-    for hint in ROLE_PATTERNS.get(role, []):
-        if normalize_match_text(hint) in normalized:
-            score += 3
-    return score
 
 
-def property_role_selection_score(
+def property_sample_stats_by_local_name(
+    domain_class: str,
+    manifest: Optional[Dict[str, Any]],
+) -> Dict[str, Dict[str, float]]:
+    """Build lightweight per-property sample stats from manifest value nodes."""
+    if not isinstance(manifest, dict):
+        return {}
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for node in manifest.get("value_nodes", []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_name") != domain_class:
+            continue
+        local_name = node.get("property_local_name") or node.get("local_name")
+        label = node.get("label")
+        if not isinstance(local_name, str) or not local_name:
+            continue
+        if label in (None, ""):
+            continue
+        value_text = str(label).strip()
+        if not value_text:
+            continue
+        bucket = buckets.setdefault(local_name, {
+            "sample_count": 0,
+            "distinct_values": set(),
+            "total_length": 0.0,
+        })
+        bucket["sample_count"] += 1
+        bucket["distinct_values"].add(value_text)
+        bucket["total_length"] += float(len(value_text))
+
+    stats: Dict[str, Dict[str, float]] = {}
+    for local_name, bucket in buckets.items():
+        sample_count = int(bucket.get("sample_count", 0) or 0)
+        if sample_count <= 0:
+            continue
+        distinct_count = len(bucket.get("distinct_values", set()))
+        total_length = float(bucket.get("total_length", 0.0) or 0.0)
+        stats[local_name] = {
+            "sample_count": float(sample_count),
+            "distinct_count": float(distinct_count),
+            "distinct_ratio": float(distinct_count) / float(sample_count),
+            "avg_length": total_length / float(sample_count),
+        }
+    return stats
+
+
+def score_property_for_role(
     prop: Dict[str, Any],
     role: str,
-    domain_class: str,
-    class_labels: Optional[Dict[str, str]] = None,
-) -> int:
-    """Score a role-bearing property within a class, preferring self-descriptive attributes over foreign-key-like ones."""
-    base_score = property_role_score(prop, role)
-    if base_score <= 0:
-        return 0
+    *,
+    text_rank: Optional[int],
+    sample_stats: Optional[Dict[str, float]],
+) -> float:
+    """Score one property for a structural projection role without lexical phrase tables."""
+    local_name = prop.get("local_name")
+    if not isinstance(local_name, str) or not local_name:
+        return float("-inf")
 
-    domain_label = None
-    if isinstance(class_labels, dict):
-        candidate_label = class_labels.get(domain_class)
-        if isinstance(candidate_label, str) and candidate_label:
-            domain_label = candidate_label
+    family = property_value_family(prop)
+    mapping_order = int(prop.get("mapping_order", 10**9) or 10**9)
+    subject_key = bool(prop.get("subject_key"))
+    sample_count = float(sample_stats.get("sample_count", 0.0) or 0.0) if isinstance(sample_stats, dict) else 0.0
+    distinct_ratio = float(sample_stats.get("distinct_ratio", 1.0) or 1.0) if isinstance(sample_stats, dict) else 1.0
+    avg_length = float(sample_stats.get("avg_length", 0.0) or 0.0) if isinstance(sample_stats, dict) else 0.0
 
-    property_text = property_surface_text(prop, domain_class)
-    compact_property_text = compact_match_text(property_text)
-    class_affinity = 0
-    for class_text in unique_preserve_order([domain_label, domain_class]):
-        if not isinstance(class_text, str) or not class_text:
-            continue
-        compact_class_text = compact_match_text(class_text)
-        if not compact_class_text:
-            continue
-        if compact_class_text in compact_property_text:
-            class_affinity += 4
-        class_affinity += min(6, char_ngram_overlap_score(class_text, property_text))
+    score = 0.0
+    score += max(0.0, 6.0 - min(float(mapping_order), 30.0) * 0.2)
+    score += min(3.0, sample_count * 0.5)
 
-    # Keep role hints dominant, then use class affinity to break ties toward self-identifying fields.
-    return base_score * 10 + class_affinity
+    if role == "id":
+        if subject_key:
+            score += 20.0
+        if family == "text":
+            score += 2.0
+        return score
+
+    if role == "score":
+        if family == "numeric":
+            score += 18.0
+        if subject_key:
+            score -= 10.0
+        return score
+
+    if family != "text":
+        return float("-inf")
+    if subject_key:
+        score -= 8.0
+
+    if text_rank is not None:
+        score += max(0.0, 4.0 - float(text_rank))
+
+    if role == "name":
+        score += 10.0 * distinct_ratio
+        score += max(0.0, 4.0 - min(avg_length, 40.0) / 10.0)
+        return score
+
+    if role == "type":
+        score += 8.0 * (1.0 - min(distinct_ratio, 1.0))
+        score += max(0.0, 3.5 - min(avg_length, 35.0) / 10.0)
+        return score
+
+    if role == "description":
+        score += min(avg_length, 60.0) / 4.0
+        if text_rank is not None and text_rank > 0:
+            score += 2.0
+        return score
+
+    if role == "status":
+        score += 7.0 * (1.0 - min(distinct_ratio, 1.0))
+        if 2.0 <= avg_length <= 20.0:
+            score += 3.0
+        return score
+
+    return float("-inf")
 
 
 def best_role_property(
@@ -3429,37 +3179,161 @@ def best_role_property(
     role: str,
     domain_properties: Dict[str, List[Dict[str, Any]]],
     class_labels: Optional[Dict[str, str]] = None,
+    manifest: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
-    """Pick the best data property local_name for a semantic role within a class."""
-    best_name = None
-    best_score = 0
-    for prop in domain_properties.get(domain_class, []):
-        score = property_role_selection_score(prop, role, domain_class, class_labels)
-        if score > best_score:
-            best_score = score
-            best_name = prop.get("local_name")
-    return best_name
+    """Pick a property from manifest/runtime structure without role phrase tables."""
+    del class_labels
+    properties = merged_domain_properties(domain_class, domain_properties)
+    if not properties:
+        return None
 
+    subject_key_props = [
+        prop for prop in properties
+        if bool(prop.get("subject_key")) and isinstance(prop.get("local_name"), str) and prop.get("local_name")
+    ]
+    text_props = [
+        prop for prop in properties
+        if property_value_family(prop) == "text"
+        and not bool(prop.get("subject_key"))
+        and isinstance(prop.get("local_name"), str)
+        and prop.get("local_name")
+    ]
+    numeric_props = [
+        prop for prop in properties
+        if property_value_family(prop) == "numeric"
+        and isinstance(prop.get("local_name"), str)
+        and prop.get("local_name")
+    ]
 
-def split_constraint_terms(text: Optional[str]) -> List[str]:
-    """Split a free-text semantic constraint into a small set of lexical search terms."""
-    if not isinstance(text, str):
-        return []
-    cleaned = text.strip(" ，,。？? ")
-    if not cleaned:
-        return []
-
-    parts = re.split(r"[、/／,，和及与或]", cleaned)
-    terms: List[str] = []
-    for part in parts:
-        item = part.strip()
-        if not item:
+    leading_text_props: List[Dict[str, Any]] = []
+    entered_text_block = False
+    exited_text_block = False
+    for prop in properties:
+        if bool(prop.get("subject_key")):
             continue
-        terms.append(item)
-        for suffix in QUESTION_STOP_TERMS:
-            if item.endswith(suffix) and len(item) > len(suffix):
-                terms.append(item[: -len(suffix)])
-    return unique_preserve_order([term for term in terms if term])
+        if property_value_family(prop) == "text":
+            if not exited_text_block:
+                leading_text_props.append(prop)
+                entered_text_block = True
+            continue
+        if entered_text_block:
+            exited_text_block = True
+
+    descriptive_text_props = leading_text_props or text_props
+    sample_stats_by_name = property_sample_stats_by_local_name(domain_class, manifest)
+
+    if role in {"id", "name", "type", "description", "status", "score"}:
+        scored: List[tuple[float, str]] = []
+        text_rank_by_name = {
+            prop.get("local_name"): index
+            for index, prop in enumerate(descriptive_text_props)
+            if isinstance(prop.get("local_name"), str) and prop.get("local_name")
+        }
+        for prop in properties:
+            local_name = prop.get("local_name")
+            if not isinstance(local_name, str) or not local_name:
+                continue
+            role_score = score_property_for_role(
+                prop,
+                role,
+                text_rank=text_rank_by_name.get(local_name),
+                sample_stats=sample_stats_by_name.get(local_name),
+            )
+            if role_score == float("-inf"):
+                continue
+            scored.append((role_score, local_name))
+        if scored:
+            scored.sort(key=lambda item: (-item[0], item[1]))
+            return scored[0][1]
+
+    if role == "id":
+        return subject_key_props[0].get("local_name") if subject_key_props else None
+    if role in {"name", "type"}:
+        return descriptive_text_props[0].get("local_name") if descriptive_text_props else None
+    if role == "description":
+        if len(descriptive_text_props) >= 2:
+            return descriptive_text_props[1].get("local_name")
+        return descriptive_text_props[0].get("local_name") if descriptive_text_props else None
+    if role == "status":
+        if len(descriptive_text_props) >= 3:
+            return descriptive_text_props[2].get("local_name")
+        if len(descriptive_text_props) >= 2:
+            return descriptive_text_props[1].get("local_name")
+        return descriptive_text_props[0].get("local_name") if descriptive_text_props else None
+    if role == "score":
+        return numeric_props[0].get("local_name") if numeric_props else None
+    return None
+
+
+def build_detail_projection_properties(
+    class_name: str,
+    domain_properties: Dict[str, List[Dict[str, Any]]],
+    class_labels: Dict[str, str],
+    manifest: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Build display projection properties using one manifest/profile snapshot."""
+    projection_properties: Dict[str, str] = {}
+    for role, var_name in (
+        ("id", "detailId"),
+        ("name", "detailName"),
+        ("type", "detailType"),
+        ("description", "detailDescription"),
+        ("status", "detailStatus"),
+        ("score", "detailScore"),
+    ):
+        property_name = best_role_property(
+            class_name,
+            role,
+            domain_properties,
+            class_labels,
+            manifest=manifest,
+        )
+        if isinstance(property_name, str) and property_name:
+            projection_properties[var_name] = property_name
+    return projection_properties
+
+
+def detail_projection_needs_sample_support(
+    class_name: str,
+    projection_properties: Dict[str, str],
+    domain_properties: Dict[str, List[Dict[str, Any]]],
+    manifest: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether detail projection is too weak to rely on manifest-only structure."""
+    if property_sample_stats_by_local_name(class_name, manifest):
+        return False
+
+    properties = merged_domain_properties(class_name, domain_properties)
+    text_candidates = [
+        prop for prop in properties
+        if property_value_family(prop) == "text"
+        and not bool(prop.get("subject_key"))
+        and isinstance(prop.get("local_name"), str)
+        and prop.get("local_name")
+    ]
+    numeric_candidates = [
+        prop for prop in properties
+        if property_value_family(prop) == "numeric"
+        and isinstance(prop.get("local_name"), str)
+        and prop.get("local_name")
+    ]
+    if not text_candidates and not numeric_candidates:
+        return False
+
+    non_id_projection_props = [
+        property_name
+        for var_name, property_name in projection_properties.items()
+        if var_name != "detailId" and isinstance(property_name, str) and property_name
+    ]
+    unique_non_id_props = set(non_id_projection_props)
+
+    if not non_id_projection_props:
+        return len(text_candidates) >= 2 or bool(numeric_candidates)
+    if len(unique_non_id_props) < min(len(non_id_projection_props), 2):
+        return len(text_candidates) >= 2 or bool(numeric_candidates)
+    if len(non_id_projection_props) < 2 and len(text_candidates) >= 3:
+        return True
+    return False
 
 
 def expand_constraint_terms(text: Optional[str], schema: Optional[Dict[str, Any]]) -> List[str]:
@@ -3484,20 +3358,24 @@ def expand_constraint_terms(text: Optional[str], schema: Optional[Dict[str, Any]
             continue
 
         expanded.extend(split_constraint_terms(label))
-        for suffix in SEMANTIC_LABEL_SUFFIXES:
-            if label.endswith(suffix) and len(label) > len(suffix):
-                candidate = label[: -len(suffix)].strip()
-                if len(candidate) >= 2:
-                    expanded.append(candidate)
 
     return unique_preserve_order([term for term in expanded if term])
 
 
-def choose_source_class_candidate(question: str, manifest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Choose the most likely source class from the question."""
+def choose_source_class_candidate(
+    question: str,
+    manifest: Optional[Dict[str, Any]],
+    slots: Optional[Dict[str, Any]] = None,
+    unit_intent_ir: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Choose the most likely source class using structural fit first and lexical fit second."""
     question_text = normalize_match_text(question)
-    which_match = WHICH_PATTERN.search(question)
-    tail_text = normalize_match_text(which_match.group("tail")) if which_match else ""
+    tail_text = normalize_match_text(extract_which_tail(question))
+    domain_properties = manifest_attributes_by_class(manifest)
+    relations_by_source = manifest.get("relations_by_source", {}) if isinstance(manifest, dict) else {}
+    semantic_state = semantic_state_from_sources(slots or {}, unit_intent_ir)
+    anchors = semantic_state.get("anchors", []) if isinstance(semantic_state, dict) else []
+    reference_entity_class = slots.get("reference_entity_class") if isinstance(slots, dict) else None
 
     candidates = []
     for item in manifest.get("classes", []) if isinstance(manifest, dict) else []:
@@ -3505,13 +3383,56 @@ def choose_source_class_candidate(question: str, manifest: Optional[Dict[str, An
             "label": item.get("label"),
             "local_name": item.get("class_name"),
         }
-        score = class_match_score(question_text, tail_text, class_item)
+        class_name = item.get("class_name")
+        if not isinstance(class_name, str) or not class_name:
+            continue
+        props = merged_domain_properties(class_name, domain_properties)
+        text_prop_count = sum(1 for prop in props if property_value_family(prop) == "text")
+        numeric_prop_count = sum(1 for prop in props if property_value_family(prop) == "numeric")
+        outgoing_relations = relations_by_source.get(class_name, [])
+
+        score = 0.0
+        if isinstance(reference_entity_class, str) and reference_entity_class == class_name:
+            score += 20.0
+        if any(
+            isinstance(anchor, dict)
+            and isinstance(anchor.get("class_hint"), str)
+            and anchor.get("class_hint") == class_name
+            for anchor in anchors
+        ):
+            score += 16.0
+
+        if semantic_state.get("status_check_requested"):
+            if isinstance(semantic_state.get("status_numeric_constraint"), dict):
+                if numeric_prop_count:
+                    score += 6.0
+            elif text_prop_count or numeric_prop_count:
+                score += 2.5
+
+        if first_nonempty_text(semantic_state.get("cause_text"), semantic_state.get("action_text")):
+            if outgoing_relations:
+                score += min(4.0, 1.0 + float(len(outgoing_relations)) * 0.75)
+            if text_prop_count:
+                score += 1.5
+
+        if semantic_state.get("asks_explanation") or semantic_state.get("asks_solution"):
+            if outgoing_relations:
+                score += min(3.0, 0.75 * float(len(outgoing_relations)))
+
+        lexical_score = class_match_score(question_text, tail_text, class_item)
+        score += min(2.0, float(lexical_score) * 0.2)
         if score <= 0:
             continue
         candidates.append({
-            "class_name": item["class_name"],
-            "label": item.get("label") or item["class_name"],
+            "class_name": class_name,
+            "label": item.get("label") or class_name,
             "score": score,
+            "score_breakdown": {
+                "text_prop_count": text_prop_count,
+                "numeric_prop_count": numeric_prop_count,
+                "outgoing_relation_count": len(outgoing_relations),
+                "lexical_bonus": min(2.0, float(lexical_score) * 0.2),
+            },
         })
     candidates.sort(key=lambda item: (-item["score"], item["class_name"]))
     return {
@@ -3524,16 +3445,21 @@ def choose_source_class_candidate_with_anchors(
     question: str,
     manifest: Optional[Dict[str, Any]],
     slots: Dict[str, Any],
+    unit_intent_ir: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Choose the source class, falling back to generic anchor signals when lexical grounding is absent."""
-    source_info = choose_source_class_candidate(question, manifest)
+    """Choose the source class, starting from structural fit and boosting explicit anchors."""
+    source_info = choose_source_class_candidate(
+        question,
+        manifest,
+        slots,
+        unit_intent_ir=unit_intent_ir,
+    )
 
     anchors = slots.get("anchors", [])
     if not isinstance(anchors, list) or not anchors:
         return source_info
 
     class_index = manifest.get("class_index", {}) if isinstance(manifest, dict) else {}
-    domain_properties = manifest_attributes_by_class(manifest)
     class_labels = {
         item["class_name"]: item.get("label") or item["class_name"]
         for item in manifest.get("classes", [])
@@ -3553,32 +3479,6 @@ def choose_source_class_candidate_with_anchors(
                 "score": 14,
                 "anchor_kind": anchor.get("kind"),
                 "anchor_value": anchor.get("value"),
-            })
-
-        if anchor.get("kind") != "identifier_like_literal":
-            continue
-
-        for domain_class, props in domain_properties.items():
-            best_anchor_property = None
-            best_anchor_score = 0
-            for prop in props:
-                if not isinstance(prop, dict):
-                    continue
-                score = property_role_score(prop, "id")
-                score = max(score, property_role_score(prop, "phone"))
-                if score > best_anchor_score:
-                    best_anchor_score = score
-                    best_anchor_property = prop.get("local_name")
-            if not best_anchor_property or best_anchor_score <= 0:
-                continue
-
-            anchored_candidates.append({
-                "class_name": domain_class,
-                "label": class_labels.get(domain_class, domain_class),
-                "score": 8 + best_anchor_score,
-                "anchor_kind": anchor.get("kind"),
-                "anchor_value": anchor.get("value"),
-                "anchor_property": best_anchor_property,
             })
 
     reference_entity_class = slots.get("reference_entity_class")
@@ -3612,207 +3512,14 @@ def choose_source_class_candidate_with_anchors(
     }
 
 
-def build_semantic_request_ir(
-    question: str,
-    template: str,
-    slots: Dict[str, Any],
-    routing: Dict[str, Any],
-    slot_inputs: List[Dict[str, Any]],
-    slot_bindings: List[Dict[str, Any]],
-    source_info: Dict[str, Any],
-    evidence_candidates: List[Dict[str, Any]],
-    unit_intent_ir: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Build a generic semantic request IR before plan construction."""
-    source_selected = source_info.get("selected") if isinstance(source_info, dict) else None
-    constraints: List[Dict[str, Any]] = []
-    references: Dict[str, Any] = {}
-    semantic_state = semantic_state_from_sources(slots, unit_intent_ir)
-    cause_text = semantic_state.get("cause_text")
-    if isinstance(cause_text, str) and cause_text:
-        constraints.append({
-            "kind": "semantic_constraint",
-            "intent": "cause",
-            "raw_text": cause_text,
-        })
-    action_text = semantic_state.get("action_text")
-    if isinstance(action_text, str) and action_text:
-        constraints.append({
-            "kind": "semantic_constraint",
-            "intent": "action_or_state",
-            "raw_text": action_text,
-        })
-    status_or_problem_text = semantic_state.get("status_or_problem_text")
-    numeric_constraint = semantic_state.get("status_numeric_constraint")
-    if isinstance(status_or_problem_text, str) and status_or_problem_text:
-        status_constraint = {
-            "kind": "semantic_constraint",
-            "intent": "status_or_problem",
-            "raw_text": status_or_problem_text,
-            "constraint_mode": (
-                "status_check"
-                if semantic_state.get("status_check_requested")
-                else "problem_text"
-            ),
-        }
-        if isinstance(numeric_constraint, dict):
-            status_constraint["comparison"] = {
-                "op": numeric_constraint.get("op"),
-                "value": numeric_constraint.get("value"),
-            }
-        constraints.append(status_constraint)
-
-    if isinstance(unit_intent_ir, dict) and isinstance(unit_intent_ir.get("references"), dict):
-        references = deepcopy(unit_intent_ir.get("references") or {})
-    resolved_reference = references.get("resolved")
-    if not isinstance(resolved_reference, dict):
-        resolved_reference = semantic_state.get("resolved_reference")
-    if isinstance(resolved_reference, dict):
-        references["resolved"] = deepcopy(resolved_reference)
-
-    return {
-        "question": question,
-        "requested_template": template,
-        "effective_template": routing.get("effective_template", template),
-        "query_family": routing.get("family", template),
-        "routing_rationale": routing.get("rationale", []),
-        "anchors": slots.get("anchors", []),
-        "slot_inputs": slot_inputs,
-        "slot_bindings": slot_bindings,
-        "source": {
-            "selected_class": source_selected.get("class_name") if isinstance(source_selected, dict) else None,
-            "candidates": source_info.get("candidates", []) if isinstance(source_info, dict) else [],
-        },
-        "evidence": {
-            "candidate_classes": [
-                item.get("class_name")
-                for item in evidence_candidates
-                if isinstance(item, dict) and isinstance(item.get("class_name"), str)
-            ],
-        },
-        "references": references,
-        "constraints": constraints,
-        "output": {
-            "grain": "entity"
-            if routing.get("family") in ("anchored_fact_lookup", "anchored_causal_lookup", "causal_lookup")
-            else "entity_set" if routing.get("family") == "causal_enumeration" else "rows",
-            "needs_analysis": routing.get("effective_template") in ("causal_lookup", "causal_enumeration"),
-            "asks_solution": bool(semantic_state.get("asks_solution")),
-            "asks_explanation": bool(semantic_state.get("asks_explanation")),
-        },
-    }
-
-
-def build_node_plan(
-    request_ir: Dict[str, Any],
-    source_class: str,
-    evidence_class: str,
-    relation_info: Optional[Dict[str, Any]],
-    include_cause: bool,
-    include_action: bool,
-    include_status: bool = False,
-    separate_action_support: bool = False,
-) -> Dict[str, Any]:
-    """Build a generic node-based plan representation for planner debugging and lowering."""
-    nodes: List[Dict[str, Any]] = [
-        {
-            "type": "SourceScan",
-            "class": source_class,
-            "var": "source",
-        }
-    ]
-
-    anchors = request_ir.get("anchors")
-    if isinstance(anchors, list):
-        for anchor in anchors:
-            if not isinstance(anchor, dict):
-                continue
-            nodes.append({
-                "type": "AnchorResolve",
-                "anchor_kind": anchor.get("kind"),
-                "anchor_value": anchor.get("value"),
-            })
-
-    resolved_reference = None
-    references = request_ir.get("references")
-    if isinstance(references, dict) and isinstance(references.get("resolved"), dict):
-        resolved_reference = references["resolved"]
-    if isinstance(resolved_reference, dict):
-        reference_entity_uris = [
-            str(item)
-            for item in resolved_reference.get("entity_uris", [])
-            if isinstance(item, str) and item
-        ]
-        if reference_entity_uris:
-            nodes.append({
-                "type": "ReferenceFilter",
-                "scope": "source",
-                "from_unit_id": resolved_reference.get("from_unit_id"),
-                "entity_class": resolved_reference.get("entity_class"),
-                "entity_count": len(reference_entity_uris),
-                "grain": resolved_reference.get("grain"),
-            })
-
-    if relation_info and relation_info.get("property"):
-        nodes.append({
-            "type": "EvidenceTraverse",
-            "from_var": "source",
-            "to_var": "evidence",
-            "property": relation_info.get("property"),
-            "direction": relation_info.get("direction", "forward"),
-            "evidence_class": evidence_class,
-        })
-    else:
-        nodes.append({
-            "type": "EvidenceScan",
-            "class": evidence_class,
-            "var": "evidence",
-        })
-
-    if include_cause:
-        nodes.append({
-            "type": "ConstraintFilter",
-            "intent": "cause",
-            "scope": "evidence",
-        })
-    if include_status:
-        nodes.append({
-            "type": "ConstraintFilter",
-            "intent": "status_or_problem",
-            "scope": "evidence",
-        })
-    if include_action:
-        nodes.append({
-            "type": "ConstraintFilter",
-            "intent": "action_or_state",
-            "scope": "support_evidence" if separate_action_support else "evidence",
-        })
-
-    if request_ir.get("output", {}).get("needs_analysis"):
-        nodes.append({
-            "type": "AnalyzerRequest",
-            "analysis_kind": "paths-batch"
-            if request_ir.get("effective_template") == "causal_enumeration"
-            else "paths",
-        })
-
-    nodes.append({
-        "type": "Project",
-        "grain": request_ir.get("output", {}).get("grain"),
-    })
-    return {
-        "query_family": request_ir.get("query_family"),
-        "nodes": nodes,
-    }
-
-
 def choose_evidence_class_candidates(
     source_class: str,
     manifest: Optional[Dict[str, Any]],
     slots: Dict[str, Any],
     unit_intent_ir: Optional[Dict[str, Any]] = None,
+    grounding_bundle: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Choose plausible evidence classes connected to the selected source class."""
+    """Choose plausible evidence classes using manifest structure first, lexical text second."""
     relations = manifest.get("relations", []) if isinstance(manifest, dict) else []
     domain_properties = manifest_attributes_by_class(manifest)
     class_labels = {
@@ -3822,6 +3529,11 @@ def choose_evidence_class_candidates(
     }
     semantic_state = semantic_state_from_sources(slots, unit_intent_ir)
     question_text = normalize_match_text(slots.get("question"))
+    reference_evidence_classes = {
+        item
+        for item in slots.get("reference_evidence_classes", [])
+        if isinstance(item, str) and item
+    }
     cause_tokens = expand_constraint_terms(
         semantic_state.get("cause_text"),
         None,
@@ -3830,6 +3542,81 @@ def choose_evidence_class_candidates(
         semantic_state.get("action_text"),
         None,
     )
+    target_text = first_nonempty_text(semantic_state.get("target_text"))
+    status_numeric_constraint = semantic_state.get("status_numeric_constraint")
+
+    def property_family_counts(class_name: str) -> Dict[str, int]:
+        counts = {"text": 0, "numeric": 0, "boolean": 0, "temporal": 0}
+        for prop in domain_properties.get(class_name, []):
+            if not isinstance(prop, dict):
+                continue
+            family = property_value_family(prop)
+            counts[family] = counts.get(family, 0) + 1
+        return counts
+
+    def evidence_text_profile_bonus(class_name: str) -> float:
+        """Prefer evidence classes that expose stable type/description text roles for causal filtering."""
+        type_prop = best_role_property(class_name, "type", domain_properties)
+        desc_prop = best_role_property(class_name, "description", domain_properties)
+        contact_markers = ("phone", "mobile", "手机号", "电话", "联系方式", "contact")
+
+        def prop_quality(local_name: Optional[str]) -> float:
+            if not isinstance(local_name, str) or not local_name:
+                return 0.0
+            compact = normalize_match_text(local_name).replace(" ", "")
+            if compact.endswith(("id", "编号", "编码", "代码", "标识", "序号")):
+                return -0.5
+            if any(marker in compact for marker in contact_markers):
+                return -0.5
+            return 0.25
+
+        score = prop_quality(type_prop) + prop_quality(desc_prop)
+        if type_prop and desc_prop and type_prop != desc_prop and score > 0:
+            score += 1.0
+        return score
+
+    def grounded_constraint_bonus(class_name: str) -> float:
+        def top_candidate_supports_class_bonus(candidate: Optional[Dict[str, Any]]) -> bool:
+            if not isinstance(candidate, dict):
+                return False
+            node_type = candidate.get("node_type")
+            if node_type == "attribute":
+                return not bool(candidate.get("numeric"))
+            if node_type != "value":
+                return False
+            catalog_source = candidate.get("catalog_source")
+            total_score = float(candidate.get("total_score", 0.0) or 0.0)
+            lexical_score = float(candidate.get("lexical_score", 0.0) or 0.0)
+            semantic_similarity = float(candidate.get("semantic_similarity", 0.0) or 0.0)
+            if catalog_source == "sample_value":
+                return total_score >= 8.0 and (lexical_score >= 4.0 or semantic_similarity >= 0.2)
+            return total_score >= 4.0
+
+        if not isinstance(grounding_bundle, dict):
+            return 0.0
+        score = 0.0
+        for slot_name, top_bonus, candidate_bonus in (
+            ("status_or_problem_text", 4.0, 1.5),
+            ("target_text", 3.0, 1.25),
+            ("cause_text", 2.5, 1.0),
+            ("action_or_state_text", 2.5, 1.0),
+        ):
+            grounded = grounding_constraint_record(grounding_bundle, slot_name)
+            top_candidate = grounded.get("top_candidate")
+            if (
+                isinstance(top_candidate, dict)
+                and isinstance(top_candidate.get("class_name"), str)
+                and top_candidate.get("class_name") == class_name
+            ):
+                score += top_bonus if top_candidate_supports_class_bonus(top_candidate) else candidate_bonus
+                continue
+            if any(
+                isinstance(candidate, dict)
+                and candidate.get("class_name") == class_name
+                for candidate in grounding_candidates_for_slot(grounding_bundle, slot_name)
+            ):
+                score += candidate_bonus
+        return score
 
     candidates: Dict[str, Dict[str, Any]] = {}
     for relation in relations:
@@ -3837,20 +3624,36 @@ def choose_evidence_class_candidates(
             continue
         evidence_class = relation["target_class"]
         label = class_labels.get(evidence_class, evidence_class)
-        score = 0
-        if any(term in normalize_match_text(label) for term in EVENT_LIKE_TERMS):
-            score += 6
-        if normalize_match_text(label) in question_text:
-            score += 4
-        evidence_props = domain_properties.get(evidence_class, [])
-        if best_role_property(evidence_class, "type", domain_properties, class_labels):
-            score += 3
-        if best_role_property(evidence_class, "description", domain_properties, class_labels):
-            score += 3
-        if cause_tokens and evidence_props:
-            score += 2
-        if action_tokens and evidence_props:
-            score += 2
+        score = 0.0
+        if relation.get("validation_source") == "mapping":
+            score += 2.0
+        else:
+            score += 0.5
+        if evidence_class in reference_evidence_classes:
+            score += 6.0
+
+        family_counts = property_family_counts(evidence_class)
+        if family_counts.get("text", 0):
+            score += min(2.0, 0.5 * float(family_counts["text"]))
+        if isinstance(status_numeric_constraint, dict) and family_counts.get("numeric", 0):
+            score += 3.0
+        elif semantic_state.get("status_check_requested") and family_counts.get("text", 0):
+            score += 1.5
+        if cause_tokens and family_counts.get("text", 0):
+            score += 1.5
+        if action_tokens and family_counts.get("text", 0):
+            score += 1.5
+        if (cause_tokens or action_tokens) and family_counts.get("text", 0):
+            score += evidence_text_profile_bonus(evidence_class)
+        if isinstance(target_text, str) and target_text and (family_counts.get("text", 0) or family_counts.get("numeric", 0)):
+            score += 1.0
+
+        score += grounded_constraint_bonus(evidence_class)
+
+        normalized_label = normalize_match_text(label)
+        if normalized_label and normalized_label in question_text:
+            score += 1.0
+
         if score <= 0:
             continue
         bucket = candidates.setdefault(evidence_class, {
@@ -3872,11 +3675,7 @@ def choose_evidence_class_candidates(
 
 def is_numeric_data_property(prop: Dict[str, Any]) -> bool:
     """Whether a data property range looks numeric."""
-    range_uri = prop.get("range")
-    if not isinstance(range_uri, str):
-        return False
-    lowered = range_uri.lower()
-    return any(marker in lowered for marker in NUMERIC_XSD_MARKERS)
+    return is_numeric_range_uri(prop.get("range"))
 
 
 def matching_action_support_properties(
@@ -3986,13 +3785,14 @@ def build_text_exists_expression(
     domain_properties: Dict[str, List[Dict[str, Any]]],
 ) -> Optional[str]:
     """Build an EXISTS clause for action evidence backed by text properties."""
-    text_props: List[str] = []
-    type_prop = best_role_property(action_class, "type", domain_properties)
-    desc_prop = best_role_property(action_class, "description", domain_properties)
-    for prop_name in (type_prop, desc_prop):
-        if isinstance(prop_name, str) and prop_name:
-            text_props.append(prop_name)
-    text_props = unique_preserve_order(text_props)
+    support_props = matching_action_support_properties(
+        action_class,
+        action_terms,
+        domain_properties,
+    )
+    text_props = unique_preserve_order(
+        [name for name in support_props.get("text", []) if isinstance(name, str) and name]
+    )
     if not text_props:
         return None
 
@@ -4252,16 +4052,17 @@ def build_multi_evidence_relaxed_query(
 
 
 def choose_enumeration_value_projection(
-    slot_bindings: List[Dict[str, Any]],
+    grounding_bundle: Dict[str, Any],
     evidence_class: str,
+    manifest: Optional[Dict[str, Any]],
     domain_properties: Dict[str, List[Dict[str, Any]]],
     class_labels: Dict[str, str],
     prefer_explanation: bool = False,
     allow_generic_explanation_projection: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Choose a stable evidence property to enumerate as the output value."""
-    attribute_candidate = top_attribute_candidate_for_slot(
-        slot_bindings,
+    attribute_candidate = grounding_top_attribute_candidate_for_slot(
+        grounding_bundle,
         "target_text",
         class_name=evidence_class,
         numeric_only=False,
@@ -4273,10 +4074,14 @@ def choose_enumeration_value_projection(
         and isinstance(attribute_candidate.get("local_name"), str)
         and attribute_candidate.get("local_name")
     ):
-        value_property = attribute_candidate["local_name"]
-        rationale = ["target_slot_grounded"]
+            value_property = attribute_candidate["local_name"]
+            rationale = ["target_slot_grounded"]
     else:
-        value_candidate = top_value_candidate_for_slot(slot_bindings, "target_text", class_name=evidence_class)
+        value_candidate = grounding_top_value_candidate_for_slot(
+            grounding_bundle,
+            "target_text",
+            class_name=evidence_class,
+        )
         if (
             isinstance(value_candidate, dict)
             and isinstance(value_candidate.get("property_local_name"), str)
@@ -4289,7 +4094,13 @@ def choose_enumeration_value_projection(
             preferred_roles = ["type", "description"] if prefer_explanation else ["type", "name", "description"]
             value_property = None
             for role in preferred_roles:
-                value_property = best_role_property(evidence_class, role, domain_properties, class_labels)
+                value_property = best_role_property(
+                    evidence_class,
+                    role,
+                    domain_properties,
+                    class_labels,
+                    manifest=manifest,
+                )
                 if isinstance(value_property, str) and value_property:
                     break
             if not isinstance(value_property, str) or not value_property:
@@ -4300,7 +4111,13 @@ def choose_enumeration_value_projection(
                 else ["target_role_fallback"]
             )
 
-    description_property = best_role_property(evidence_class, "description", domain_properties, class_labels)
+    description_property = best_role_property(
+        evidence_class,
+        "description",
+        domain_properties,
+        class_labels,
+        manifest=manifest,
+    )
     if description_property == value_property:
         description_property = None
 
@@ -4448,6 +4265,62 @@ def build_constraint_filter(var_names: List[str], terms: List[str]) -> Optional[
     return {"any_of": filters}
 
 
+def _semantic_planner_runtime_callbacks() -> Dict[str, Any]:
+    """Return the repo-owned callback set for the semantic planner runtime."""
+    return {
+        "with_semantic_vector_index": with_semantic_vector_index,
+        "build_semantic_manifest": build_semantic_manifest,
+        "extract_question_slots": extract_question_slots,
+        "build_question_unit_intent_ir": build_question_unit_intent_ir,
+        "semantic_state_from_sources": semantic_state_from_sources,
+        "route_query_family": route_query_family,
+        "build_family_slot_inputs": build_family_slot_inputs,
+        "choose_source_class_candidate_with_anchors": choose_source_class_candidate_with_anchors,
+        "bind_semantic_slots": bind_semantic_slots,
+        "merge_source_candidates_from_slot_bindings": merge_source_candidates_from_slot_bindings,
+        "choose_evidence_class_candidates": choose_evidence_class_candidates,
+        "rank_value_catalog_classes": rank_value_catalog_classes,
+        "slot_inputs_need_value_catalog": policy_slot_inputs_need_value_catalog,
+        "load_sample_value_nodes": load_sample_value_nodes,
+        "with_value_nodes": with_value_nodes,
+        "build_grounded_constraint_view": build_grounded_constraint_view,
+        "build_explicit_metric_clarification_hint": build_explicit_metric_clarification_hint,
+        "manifest_attributes_by_class": manifest_attributes_by_class,
+        "schema_indexes": schema_indexes,
+        "unique_preserve_order": unique_preserve_order,
+        "best_role_property": best_role_property,
+        "resolve_builder_link_direction": resolve_builder_link_direction,
+        "mark_optional_display_selects": mark_optional_display_selects,
+        "grounded_constraint_terms": grounded_constraint_terms,
+        "build_constraint_filter": build_constraint_filter,
+        "choose_action_support_classes": choose_action_support_classes,
+        "choose_enumeration_value_projection": choose_enumeration_value_projection,
+        "build_value_enumeration_query": build_value_enumeration_query,
+        "selected_anchor_binding_for_class": selected_anchor_binding_for_class,
+        "build_multi_evidence_relaxed_query": build_multi_evidence_relaxed_query,
+    }
+
+
+def _build_semantic_query_planner_legacy(
+    question: str,
+    template: str,
+    schema: Optional[Dict[str, Any]],
+    base_url: Optional[str] = None,
+    slots_override: Optional[Dict[str, Any]] = None,
+    unit_intent_ir: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Legacy compatibility shim kept during semantic planner runtime cutover."""
+    return runtime_build_semantic_query_planner(
+        question,
+        template,
+        schema,
+        base_url=base_url,
+        slots_override=slots_override,
+        unit_intent_ir=unit_intent_ir,
+        runtime=_semantic_planner_runtime_callbacks(),
+    )
+
+
 def build_semantic_query_planner(
     question: str,
     template: str,
@@ -4456,868 +4329,16 @@ def build_semantic_query_planner(
     slots_override: Optional[Dict[str, Any]] = None,
     unit_intent_ir: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Build a lightweight semantic query plan suggestion from question + schema."""
-    if template not in ("fact_lookup", "causal_lookup", "causal_enumeration", "enumeration"):
-        return None
-
-    manifest = with_semantic_vector_index(build_semantic_manifest(schema))
-    slots = dict(slots_override) if isinstance(slots_override, dict) else extract_question_slots(question, template)
-    effective_unit_intent_ir = unit_intent_ir
-    if not isinstance(effective_unit_intent_ir, dict):
-        synthetic_unit = {
-            "unit_id": "q1",
-            "text": question,
-            "raw_text": question,
-            "position": 1,
-            "reference_markers": list(slots.get("reference_markers", []))
-            if isinstance(slots.get("reference_markers"), list)
-            else [],
-            "dependency": None,
-        }
-        effective_unit_intent_ir = build_question_unit_intent_ir(synthetic_unit, slots, template)
-    semantic_state = semantic_state_from_sources(slots, effective_unit_intent_ir)
-    constraint_snapshot = semantic_state.get("constraint_snapshot", {})
-    asks_explanation = bool(semantic_state.get("asks_explanation"))
-    target_text = first_nonempty_text(
-        semantic_state.get("target_text"),
-        semantic_state.get("result_hint"),
-    )
-    routing = route_query_family(question, template, slots, unit_intent_ir=effective_unit_intent_ir)
-    slots["question_type"] = routing["family"]
-    slot_inputs = build_family_slot_inputs(question, slots, routing, unit_intent_ir=effective_unit_intent_ir)
-    source_info = choose_source_class_candidate_with_anchors(question, manifest, slots)
-    initial_slot_bindings = bind_semantic_slots(manifest, slot_inputs)
-    source_info = merge_source_candidates_from_slot_bindings(source_info, initial_slot_bindings, manifest)
-    provisional_source = source_info.get("selected")
-    provisional_source_class = provisional_source.get("class_name") if isinstance(provisional_source, dict) else None
-    provisional_evidence_candidates = (
-        choose_evidence_class_candidates(provisional_source_class, manifest, slots)
-        if isinstance(provisional_source_class, str) and provisional_source_class
-        else []
-    )
-    value_class_names = rank_value_catalog_classes(
-        source_info,
-        provisional_evidence_candidates,
-        initial_slot_bindings,
-    )
-    sampled_value_nodes = load_sample_value_nodes(base_url, manifest, value_class_names)
-    manifest = with_semantic_vector_index(with_value_nodes(manifest, sampled_value_nodes))
-    slot_bindings = bind_semantic_slots(manifest, slot_inputs)
-    source_info = choose_source_class_candidate_with_anchors(question, manifest, slots)
-    source_info = merge_source_candidates_from_slot_bindings(source_info, slot_bindings, manifest)
-    request_ir = build_semantic_request_ir(
+    """Thin wrapper around the repo-owned semantic planner runtime."""
+    return runtime_build_semantic_query_planner(
         question,
         template,
-        slots,
-        routing,
-        slot_inputs,
-        slot_bindings,
-        source_info,
-        [],
-        unit_intent_ir=effective_unit_intent_ir,
+        schema,
+        base_url=base_url,
+        slots_override=slots_override,
+        unit_intent_ir=unit_intent_ir,
+        runtime=_semantic_planner_runtime_callbacks(),
     )
-    source_selected = source_info.get("selected")
-    if not source_selected:
-        clarification_hint = None
-        if (
-            status_check_mode
-            and not isinstance(status_numeric_constraint, dict)
-            and (
-                "status_or_problem_text" in missing_constraint_bindings
-                or "status_or_problem_text" in non_lowerable_constraint_bindings
-            )
-        ):
-            clarification_hint = build_explicit_metric_clarification_hint(semantic_state)
-        return {
-            "mode": "semantic_query_planner",
-            "slots": slots,
-            "request_ir": request_ir,
-            "query_family": routing["family"],
-            "requested_template": template,
-            "effective_template": routing["effective_template"],
-            "semantic_manifest_summary": {
-                "class_count": len(manifest.get("classes", [])),
-                "relation_count": len(manifest.get("relations", [])),
-                "class_node_count": len(manifest.get("class_nodes", [])),
-                "attribute_node_count": len(manifest.get("attribute_nodes", [])),
-                "relation_node_count": len(manifest.get("relation_nodes", [])),
-                "value_node_count": len(manifest.get("value_nodes", [])),
-            },
-            "source_candidates": [],
-            "evidence_candidates": [],
-            "candidate_plans": [],
-            "ready": False,
-            "reason": "no_source_class_grounding",
-        }
-
-    effective_template = routing["effective_template"]
-    preview_source_class = source_selected["class_name"]
-    preview_evidence_candidates = choose_evidence_class_candidates(
-        preview_source_class,
-        manifest,
-        slots,
-        unit_intent_ir=effective_unit_intent_ir,
-    )
-    request_ir = build_semantic_request_ir(
-        question,
-        template,
-        slots,
-        routing,
-        slot_inputs,
-        slot_bindings,
-        source_info,
-        preview_evidence_candidates,
-        unit_intent_ir=effective_unit_intent_ir,
-    )
-    domain_properties = manifest_attributes_by_class(manifest)
-    indexes = schema_indexes(schema)
-    class_labels = {
-        item["class_name"]: item.get("label") or item["class_name"]
-        for item in manifest.get("classes", [])
-        if isinstance(item, dict) and isinstance(item.get("class_name"), str) and item.get("class_name")
-    }
-
-    missing_constraint_bindings: List[str] = []
-    non_lowerable_constraint_bindings: List[str] = []
-    clarification_hint = None
-    status_slot_input = slot_input_for_name(slot_inputs, "status_or_problem_text")
-    status_check_mode = (
-        isinstance(status_slot_input, dict)
-        and status_slot_input.get("constraint_mode") == "status_check"
-    )
-    status_numeric_constraint = semantic_state.get("status_numeric_constraint")
-    misrouted_anchored_status_lookup = (
-        bool(semantic_state.get("has_anchor"))
-        and bool(semantic_state.get("status_check_requested"))
-        and routing.get("family") in ("enumeration", "causal_enumeration", "explanation_enumeration")
-    )
-    if misrouted_anchored_status_lookup:
-        return {
-            "mode": "semantic_query_planner",
-            "slots": slots,
-            "request_ir": request_ir,
-            "query_family": routing["family"],
-            "requested_template": template,
-            "effective_template": effective_template,
-            "routing_rationale": routing["rationale"],
-            "semantic_manifest_summary": {
-                "class_count": len(manifest.get("classes", [])),
-                "relation_count": len(manifest.get("relations", [])),
-                "class_node_count": len(manifest.get("class_nodes", [])),
-                "attribute_node_count": len(manifest.get("attribute_nodes", [])),
-                "relation_node_count": len(manifest.get("relation_nodes", [])),
-                "value_node_count": len(manifest.get("value_nodes", [])),
-            },
-            "source_candidates": source_info.get("candidates", []),
-            "evidence_candidates": preview_evidence_candidates,
-            "candidate_plans": [],
-            "selected_plan": None,
-            "ready": False,
-            "reason": "anchored_status_lookup_requires_smaller_family",
-        }
-    if routing.get("family", "").startswith("anchored_"):
-        slot_requirements = [
-            ("status_or_problem_text", semantic_state.get("status_or_problem_text")),
-            ("cause_text", semantic_state.get("cause_text")),
-            ("action_or_state_text", semantic_state.get("action_text")),
-        ]
-        for slot_name, slot_value in slot_requirements:
-            if not isinstance(slot_value, str) or not slot_value.strip():
-                continue
-            if not slot_binding_has_candidates(slot_bindings, slot_name):
-                missing_constraint_bindings.append(slot_name)
-            elif (
-                slot_name == "status_or_problem_text"
-                and status_check_mode
-                and not isinstance(status_numeric_constraint, dict)
-                and not slot_candidates_have_text_lowering(slot_bindings, slot_name, status_slot_input)
-            ):
-                non_lowerable_constraint_bindings.append(slot_name)
-
-    if missing_constraint_bindings or non_lowerable_constraint_bindings:
-        if (
-            status_check_mode
-            and not isinstance(status_numeric_constraint, dict)
-            and (
-                "status_or_problem_text" in missing_constraint_bindings
-                or "status_or_problem_text" in non_lowerable_constraint_bindings
-            )
-        ):
-            clarification_hint = build_explicit_metric_clarification_hint(semantic_state)
-        return {
-            "mode": "semantic_query_planner",
-            "slots": slots,
-            "request_ir": request_ir,
-            "query_family": routing["family"],
-            "requested_template": template,
-            "effective_template": effective_template,
-            "routing_rationale": routing["rationale"],
-            "semantic_manifest_summary": {
-                "class_count": len(manifest.get("classes", [])),
-                "relation_count": len(manifest.get("relations", [])),
-                "class_node_count": len(manifest.get("class_nodes", [])),
-                "attribute_node_count": len(manifest.get("attribute_nodes", [])),
-                "relation_node_count": len(manifest.get("relation_nodes", [])),
-                "value_node_count": len(manifest.get("value_nodes", [])),
-            },
-            "source_candidates": source_info.get("candidates", []),
-            "evidence_candidates": preview_evidence_candidates,
-            "candidate_plans": [],
-            "selected_plan": None,
-            "ready": False,
-            "reason": "constraint_grounding_not_executable",
-            "missing_constraint_bindings": missing_constraint_bindings,
-            "non_lowerable_constraint_bindings": non_lowerable_constraint_bindings,
-            "clarification_hint": clarification_hint,
-        }
-
-    anchor_value = None
-    anchors = semantic_state.get("anchors", [])
-    if isinstance(anchors, list):
-        for anchor in anchors:
-            if isinstance(anchor, dict) and isinstance(anchor.get("value"), str) and anchor.get("value"):
-                anchor_value = anchor.get("value")
-                break
-    reference_entity_uris = unique_preserve_order([
-        str(item)
-        for item in slots.get("reference_entity_uris", [])
-        if isinstance(item, str) and item
-    ])
-    reference_entity_class = slots.get("reference_entity_class")
-
-    candidate_plans = []
-    all_evidence_candidates: List[Dict[str, Any]] = []
-    seen_evidence_classes: Set[str] = set()
-    source_candidates = [
-        item
-        for item in source_info.get("candidates", [])
-        if isinstance(item, dict) and isinstance(item.get("class_name"), str) and item.get("class_name")
-    ][:5]
-
-    for source_candidate in source_candidates:
-        source_class = source_candidate["class_name"]
-        if isinstance(reference_entity_class, str) and reference_entity_class and source_class != reference_entity_class:
-            continue
-        source_score = float(source_candidate.get("score", 0.0) or 0.0)
-        source_id_prop = best_role_property(source_class, "id", domain_properties, class_labels)
-        source_name_prop = best_role_property(source_class, "name", domain_properties, class_labels)
-        evidence_candidates = choose_evidence_class_candidates(
-            source_class,
-            manifest,
-            slots,
-            unit_intent_ir=effective_unit_intent_ir,
-        )
-        for evidence in evidence_candidates:
-            evidence_class_name = evidence.get("class_name")
-            if isinstance(evidence_class_name, str) and evidence_class_name and evidence_class_name not in seen_evidence_classes:
-                seen_evidence_classes.add(evidence_class_name)
-                all_evidence_candidates.append(evidence)
-
-        for evidence in evidence_candidates[:3]:
-            evidence_class = evidence["class_name"]
-            evidence_id_prop = best_role_property(evidence_class, "id", domain_properties, class_labels)
-            evidence_type_prop = best_role_property(evidence_class, "type", domain_properties, class_labels)
-            evidence_desc_prop = best_role_property(evidence_class, "description", domain_properties, class_labels)
-            try:
-                relation_info = resolve_builder_link_direction(source_class, evidence_class, None, indexes)
-            except SystemExit:
-                relation_info = evidence.get("relations", [None])[0] if isinstance(evidence.get("relations"), list) and evidence.get("relations") else None
-
-            select_specs = []
-            if source_id_prop:
-                select_specs.append({"var": "sourceId", "subject": "source", "property": source_id_prop})
-            if source_name_prop:
-                select_specs.append({"var": "sourceName", "subject": "source", "property": source_name_prop})
-            if evidence_id_prop:
-                select_specs.append({"var": "evidenceId", "subject": "evidence", "property": evidence_id_prop})
-            if evidence_type_prop:
-                select_specs.append({"var": "evidenceType", "subject": "evidence", "property": evidence_type_prop})
-            if evidence_desc_prop:
-                select_specs.append({"var": "evidenceDescription", "subject": "evidence", "property": evidence_desc_prop})
-
-            text_vars = []
-            if evidence_type_prop:
-                text_vars.append("evidenceType")
-            if evidence_desc_prop:
-                text_vars.append("evidenceDescription")
-
-            status_terms = unique_preserve_order(
-                expand_constraint_terms(
-                    semantic_state.get("status_or_problem_text"),
-                    schema,
-                )
-                + binding_terms_for_slot(slot_bindings, "status_or_problem_text")
-            )
-            cause_terms = unique_preserve_order(
-                binding_terms_for_slot(slot_bindings, "cause_text", preferred_node_types=["value"])
-                + expand_constraint_terms(
-                    semantic_state.get("cause_text"),
-                    schema,
-                )
-                + binding_terms_for_slot(slot_bindings, "cause_text")
-            )
-            if not cause_terms and not (status_check_mode and isinstance(status_numeric_constraint, dict)):
-                cause_terms = list(status_terms)
-            action_terms = unique_preserve_order(
-                binding_terms_for_slot(slot_bindings, "action_or_state_text", preferred_node_types=["value"])
-                + expand_constraint_terms(
-                    semantic_state.get("action_text"),
-                    schema,
-                )
-                + binding_terms_for_slot(slot_bindings, "action_or_state_text")
-            )
-            action_slot_input = slot_input_for_name(slot_inputs, "action_or_state_text")
-            action_slot_text = (
-                action_slot_input.get("text")
-                if isinstance(action_slot_input, dict) and isinstance(action_slot_input.get("text"), str)
-                else None
-            )
-            cause_filter = build_constraint_filter(text_vars, cause_terms)
-            action_filter = build_constraint_filter(text_vars, action_terms)
-            support_slot_requested = action_slot_input is not None
-            support_evidence_classes = [
-                item.get("class_name")
-                for item in evidence_candidates
-                if isinstance(item, dict) and isinstance(item.get("class_name"), str) and item.get("class_name")
-            ]
-
-            if effective_template == "enumeration":
-                explanation_family = routing.get("family") == "explanation_enumeration"
-                generic_explanation_target = explanation_family and is_generic_explanation_target(
-                    target_text
-                )
-                if support_slot_requested and action_terms:
-                    support_evidence_classes = choose_action_support_classes(
-                        evidence_candidates,
-                        action_terms,
-                        domain_properties,
-                        slot_text=action_slot_text,
-                        limit=2 if explanation_family else 5,
-                    ) or support_evidence_classes
-                value_projection = choose_enumeration_value_projection(
-                    slot_bindings,
-                    evidence_class,
-                    domain_properties,
-                    class_labels,
-                    prefer_explanation=asks_explanation,
-                    allow_generic_explanation_projection=generic_explanation_target,
-                )
-                if value_projection is None:
-                    continue
-
-                projection_confidence = 2.0 if "target_slot_grounded" in value_projection.get("rationale", []) else 1.0
-                support_terms = list(action_terms)
-                if support_slot_requested and not support_terms:
-                    continue
-                explanation_bonus = 2.0 if asks_explanation else 0.0
-                reference_scope_applied = bool(reference_entity_uris)
-                reference_rationale = ["reference_scope_bound"] if reference_scope_applied else []
-                reference_bonus = 1.0 if reference_scope_applied else 0.0
-
-                enumeration_variants: List[tuple[str, Optional[Dict[str, Any]], List[str], float, bool]] = []
-                if support_terms:
-                    weak_target_projection = "target_role_fallback" in value_projection.get("rationale", [])
-                    broad_support_penalty = (
-                        4.0 if asks_explanation and weak_target_projection else 0.0
-                    )
-                    same_evidence_confidence = (
-                        evidence["score"] + source_score + projection_confidence + 2.0 + reference_bonus
-                    )
-                    source_support_confidence = (
-                        evidence["score"] + source_score + projection_confidence + 1.0 + explanation_bonus + reference_bonus - broad_support_penalty
-                    )
-                    if explanation_family:
-                        same_evidence_confidence -= 2.0
-                        source_support_confidence += 3.0
-                    enumeration_variants.append((
-                        "value_enumeration_same_evidence",
-                        build_value_enumeration_query(
-                            schema,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            value_projection["value_property"],
-                            value_projection.get("description_property"),
-                            support_terms,
-                            support_mode="same_evidence",
-                            source_uri_values=reference_entity_uris,
-                        ),
-                        ["target_value_projected", "action_term_grounded"],
-                        same_evidence_confidence,
-                        False,
-                    ))
-                    enumeration_variants.append((
-                        "value_enumeration_source_support",
-                        build_value_enumeration_query(
-                            schema,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            value_projection["value_property"],
-                            value_projection.get("description_property"),
-                            support_terms,
-                            support_mode="source_support",
-                            support_slot_text=action_slot_text,
-                            support_classes=support_evidence_classes,
-                            source_uri_values=reference_entity_uris,
-                        ),
-                        ["target_value_projected", "action_term_grounded_separate_evidence"],
-                        source_support_confidence,
-                        True,
-                    ))
-                else:
-                    enumeration_variants.append((
-                        "value_enumeration",
-                        build_value_enumeration_query(
-                            schema,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            value_projection["value_property"],
-                            value_projection.get("description_property"),
-                            [],
-                            support_mode="none",
-                            source_uri_values=reference_entity_uris,
-                        ),
-                        ["target_value_projected"],
-                        evidence["score"] + source_score + projection_confidence + reference_bonus,
-                        False,
-                    ))
-
-                for variant_name, enumeration_query, rationale, confidence, separate_support in enumeration_variants:
-                    if enumeration_query is None:
-                        continue
-                    candidate_plans.append({
-                        "variant": variant_name,
-                        "confidence_score": confidence,
-                        "rationale": reference_rationale + rationale + value_projection.get("rationale", []),
-                        "query_family": routing["family"],
-                        "source_class": source_class,
-                        "evidence_class": evidence_class,
-                        "node_plan": build_node_plan(
-                            request_ir,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            include_cause=False,
-                            include_action=bool(support_terms),
-                            include_status=False,
-                            separate_action_support=separate_support,
-                        ),
-                        "plan": {
-                            "template": effective_template,
-                            "sparql": enumeration_query,
-                        },
-                    })
-                continue
-
-            base_builder = {
-                "source_class": source_class,
-                "source_var": "source",
-                "evidence_class": evidence_class,
-                "evidence_var": "evidence",
-                "distinct": True,
-            }
-            base_order_by = ["sourceId"] if source_id_prop else []
-            base_filters = []
-            reference_scope_applied = False
-            if reference_entity_uris:
-                reference_scope_applied = True
-                if len(reference_entity_uris) == 1:
-                    base_filters.append({
-                        "var": "source",
-                        "op": "equals",
-                        "value": reference_entity_uris[0],
-                    })
-                else:
-                    base_filters.append({
-                        "var": "source",
-                        "op": "in",
-                        "values": reference_entity_uris,
-                    })
-            reference_rationale = ["reference_scope_bound"] if reference_scope_applied else []
-            reference_bonus = 1.0 if reference_scope_applied else 0.0
-            anchor_binding_candidates = []
-            if isinstance(anchor_value, str) and anchor_value:
-                source_anchor_binding = selected_anchor_binding_for_class(slot_bindings, source_class)
-                if isinstance(source_anchor_binding, dict):
-                    anchor_binding_candidates.append({
-                        "subject": "source",
-                        "var": "anchorMatch",
-                        "binding": source_anchor_binding,
-                    })
-                evidence_anchor_binding = selected_anchor_binding_for_class(slot_bindings, evidence_class)
-                if isinstance(evidence_anchor_binding, dict):
-                    anchor_binding_candidates.append({
-                        "subject": "evidence",
-                        "var": "anchorMatch",
-                        "binding": evidence_anchor_binding,
-                    })
-            best_anchor_candidate = None
-            if anchor_binding_candidates:
-                anchor_binding_candidates.sort(
-                    key=lambda item: (
-                        -float(item["binding"].get("total_score", 0.0) or 0.0),
-                        item["subject"],
-                        str(item["binding"].get("local_name", "")),
-                    )
-                )
-                best_anchor_candidate = anchor_binding_candidates[0]
-                if not any(item.get("var") == "anchorMatch" for item in select_specs):
-                    select_specs.append({
-                        "var": "anchorMatch",
-                        "subject": best_anchor_candidate["subject"],
-                        "property": best_anchor_candidate["binding"]["local_name"],
-                    })
-                base_filters.append({
-                    "var": "anchorMatch",
-                    "op": "equals",
-                    "value": anchor_value,
-                })
-
-            if effective_template == "fact_lookup":
-                target_attribute_binding = top_attribute_candidate_for_slot(
-                    slot_bindings,
-                    "target_text",
-                    class_name=evidence_class,
-                    numeric_only=False,
-                )
-                if isinstance(target_attribute_binding, dict):
-                    fact_select_specs = list(select_specs)
-                    if not any(item.get("var") == "evidenceTargetValue" for item in fact_select_specs):
-                        fact_select_specs.append({
-                            "var": "evidenceTargetValue",
-                            "subject": "evidence",
-                            "property": target_attribute_binding["local_name"],
-                        })
-                    rationale = ["target_slot_grounded", "fact_target_projected"]
-                    confidence = (
-                        evidence["score"]
-                        + source_score
-                        + float(target_attribute_binding.get("total_score", 0.0) or 0.0)
-                        + reference_bonus
-                    )
-                    if best_anchor_candidate is not None:
-                        rationale.append("anchor_bound")
-                        confidence += 2.0
-                    candidate_plans.append({
-                        "variant": "anchored_fact_target_projection",
-                        "confidence_score": confidence,
-                        "rationale": reference_rationale + rationale,
-                        "query_family": routing["family"],
-                        "source_class": source_class,
-                        "evidence_class": evidence_class,
-                        "node_plan": build_node_plan(
-                            request_ir,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            include_cause=False,
-                            include_action=False,
-                            include_status=False,
-                            separate_action_support=False,
-                        ),
-                        "plan": {
-                            "template": effective_template,
-                            "sparql": {
-                                "source_var": "source",
-                                "builder": {
-                                    **base_builder,
-                                    "select": mark_optional_display_selects(
-                                        fact_select_specs,
-                                        base_filters,
-                                        base_order_by,
-                                    ),
-                                    "filters": base_filters,
-                                    "order_by": base_order_by,
-                                },
-                            },
-                        },
-                    })
-                continue
-
-            status_metric_binding = None
-            if status_check_mode and isinstance(status_numeric_constraint, dict):
-                status_metric_binding = top_attribute_candidate_for_slot(
-                    slot_bindings,
-                    "status_or_problem_text",
-                    class_name=evidence_class,
-                    numeric_only=True,
-                )
-                if isinstance(status_metric_binding, dict):
-                    numeric_select_specs = list(select_specs)
-                    if not any(item.get("var") == "statusMetric" for item in numeric_select_specs):
-                        numeric_select_specs.append({
-                            "var": "statusMetric",
-                            "subject": "evidence",
-                            "property": status_metric_binding["local_name"],
-                        })
-                    numeric_filters = list(base_filters) + [{
-                        "var": "statusMetric",
-                        "op": status_numeric_constraint["op"],
-                        "value": status_numeric_constraint["value"],
-                    }]
-                    rationale = ["status_constraint_grounded", "numeric_constraint_lowered"]
-                    confidence = (
-                        evidence["score"]
-                        + source_score
-                        + float(status_metric_binding.get("total_score", 0.0) or 0.0)
-                        + 2
-                        + reference_bonus
-                    )
-                    if best_anchor_candidate is not None:
-                        rationale.append("anchor_bound")
-                        confidence += 2
-                    candidate_plans.append({
-                        "variant": "status_check_numeric",
-                        "confidence_score": confidence,
-                        "rationale": reference_rationale + rationale,
-                        "query_family": routing["family"],
-                        "source_class": source_class,
-                        "evidence_class": evidence_class,
-                        "node_plan": build_node_plan(
-                            request_ir,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            include_cause=False,
-                            include_action=False,
-                            include_status=True,
-                            separate_action_support=False,
-                        ),
-                        "plan": {
-                            "template": effective_template,
-                            "sparql": {
-                                "source_var": "source",
-                                "builder": {
-                                    **base_builder,
-                                    "select": mark_optional_display_selects(
-                                        numeric_select_specs,
-                                        numeric_filters,
-                                        base_order_by,
-                                    ),
-                                    "filters": numeric_filters,
-                                    "order_by": base_order_by,
-                                },
-                            },
-                            "analysis": {
-                                "kind": "paths-batch" if effective_template == "causal_enumeration" else "paths",
-                                "payload": {
-                                    "mode": "paths",
-                                    "profile": "causal",
-                                    "max_depth": 3,
-                                },
-                            },
-                        },
-                    })
-
-            if cause_filter is not None:
-                strict_filters = list(base_filters) + [cause_filter]
-                rationale = ["cause_term_grounded"]
-                confidence = evidence["score"] + source_score + 3 + reference_bonus
-                if best_anchor_candidate is not None:
-                    rationale.append("anchor_bound")
-                    confidence += 2
-                variant = "cause_only"
-                if action_filter is not None:
-                    strict_filters.append(action_filter)
-                    rationale.append("action_term_grounded")
-                    confidence += 3
-                    variant = "same_evidence_strict"
-                candidate_plans.append({
-                    "variant": variant,
-                    "confidence_score": confidence,
-                    "rationale": reference_rationale + rationale,
-                    "query_family": routing["family"],
-                    "source_class": source_class,
-                    "evidence_class": evidence_class,
-                    "node_plan": build_node_plan(
-                        request_ir,
-                        source_class,
-                        evidence_class,
-                        relation_info,
-                        include_cause=True,
-                        include_action=action_filter is not None,
-                        separate_action_support=False,
-                    ),
-                    "plan": {
-                        "template": effective_template,
-                        "sparql": {
-                            "source_var": "source",
-                            "builder": {
-                                **base_builder,
-                                "select": mark_optional_display_selects(
-                                    select_specs,
-                                    strict_filters,
-                                    base_order_by,
-                                ),
-                                "filters": strict_filters,
-                                "order_by": base_order_by,
-                            },
-                        },
-                        "analysis": {
-                            "kind": "paths-batch" if effective_template == "causal_enumeration" else "paths",
-                            "payload": {
-                                "mode": "paths",
-                                "profile": "causal",
-                                "max_depth": 3,
-                            },
-                        },
-                    },
-                })
-
-            if cause_filter is not None and action_filter is not None:
-                multi_evidence_query = build_multi_evidence_relaxed_query(
-                    schema,
-                    source_class,
-                    evidence_class,
-                    action_terms,
-                    cause_terms,
-                    source_id_prop,
-                    source_name_prop,
-                    evidence_id_prop,
-                    evidence_type_prop,
-                    evidence_desc_prop,
-                    source_uri_values=reference_entity_uris,
-                )
-                if multi_evidence_query is not None and best_anchor_candidate is None:
-                    candidate_plans.append({
-                        "variant": "source_support_relaxed",
-                        "confidence_score": evidence["score"] + source_score + 2 + reference_bonus,
-                        "rationale": reference_rationale + ["cause_term_grounded", "action_term_grounded_separate_evidence"],
-                        "query_family": routing["family"],
-                        "source_class": source_class,
-                        "evidence_class": evidence_class,
-                        "node_plan": build_node_plan(
-                            request_ir,
-                            source_class,
-                            evidence_class,
-                            relation_info,
-                            include_cause=True,
-                            include_action=True,
-                            separate_action_support=True,
-                        ),
-                        "plan": {
-                            "template": effective_template,
-                            "sparql": multi_evidence_query,
-                            "analysis": {
-                                "kind": "paths-batch" if effective_template == "causal_enumeration" else "paths",
-                                "payload": {
-                                    "mode": "paths",
-                                    "profile": "causal",
-                                    "max_depth": 3,
-                                },
-                            },
-                        },
-                    })
-
-                candidate_plans.append({
-                    "variant": "cause_only_relaxed",
-                    "confidence_score": evidence["score"] + source_score + reference_bonus + (2 if best_anchor_candidate is not None else 0),
-                    "rationale": reference_rationale + ["cause_term_grounded", "action_term_relaxed"] + (["anchor_bound"] if best_anchor_candidate is not None else []),
-                    "query_family": routing["family"],
-                    "source_class": source_class,
-                    "evidence_class": evidence_class,
-                    "node_plan": build_node_plan(
-                        request_ir,
-                        source_class,
-                        evidence_class,
-                        relation_info,
-                        include_cause=True,
-                        include_action=False,
-                        separate_action_support=False,
-                    ),
-                    "plan": {
-                        "template": effective_template,
-                        "sparql": {
-                            "source_var": "source",
-                            "builder": {
-                                **base_builder,
-                                "select": mark_optional_display_selects(
-                                    select_specs,
-                                    list(base_filters) + [cause_filter],
-                                    base_order_by,
-                                ),
-                                "filters": list(base_filters) + [cause_filter],
-                                "order_by": base_order_by,
-                            },
-                        },
-                        "analysis": {
-                            "kind": "paths-batch" if effective_template == "causal_enumeration" else "paths",
-                            "payload": {
-                                "mode": "paths",
-                                "profile": "causal",
-                                "max_depth": 3,
-                            },
-                        },
-                    },
-                })
-
-    candidate_plans.sort(key=lambda item: (-item["confidence_score"], item["variant"]))
-    underconstrained_target_projection = (
-        effective_template == "enumeration"
-        and bool(semantic_state.get("asks_explanation"))
-        and isinstance(semantic_state.get("target_text"), str)
-        and bool(semantic_state.get("target_text").strip())
-        and bool(candidate_plans)
-        and all("target_role_fallback" in item.get("rationale", []) for item in candidate_plans)
-    )
-    selected_plan = None if underconstrained_target_projection else (candidate_plans[0]["plan"] if candidate_plans else None)
-    ready = selected_plan is not None
-    evidence_candidates = all_evidence_candidates or preview_evidence_candidates
-    if candidate_plans:
-        selected_source_class = candidate_plans[0].get("source_class")
-        selected_source = next(
-            (
-                item for item in source_info.get("candidates", [])
-                if isinstance(item, dict) and item.get("class_name") == selected_source_class
-            ),
-            source_selected,
-        )
-        selected_source_info = {
-            "selected": selected_source,
-            "candidates": source_info.get("candidates", []),
-        }
-        evidence_candidates = choose_evidence_class_candidates(selected_source_class, manifest, slots)
-        request_ir = build_semantic_request_ir(
-            question,
-            template,
-            slots,
-            routing,
-            slot_inputs,
-            slot_bindings,
-            selected_source_info,
-            evidence_candidates,
-            unit_intent_ir=effective_unit_intent_ir,
-        )
-
-    return {
-        "mode": "semantic_query_planner",
-        "slots": slots,
-        "request_ir": request_ir,
-        "query_family": routing["family"],
-        "requested_template": template,
-        "effective_template": effective_template,
-        "routing_rationale": routing["rationale"],
-        "semantic_manifest_summary": {
-            "class_count": len(manifest.get("classes", [])),
-            "relation_count": len(manifest.get("relations", [])),
-            "class_node_count": len(manifest.get("class_nodes", [])),
-            "attribute_node_count": len(manifest.get("attribute_nodes", [])),
-            "relation_node_count": len(manifest.get("relation_nodes", [])),
-            "value_node_count": len(manifest.get("value_nodes", [])),
-        },
-        "source_candidates": source_info.get("candidates", []),
-        "evidence_candidates": evidence_candidates,
-        "candidate_plans": candidate_plans,
-        "selected_plan": selected_plan,
-        "ready": ready,
-        "reason": None if ready else (
-            "target_projection_underconstrained"
-            if underconstrained_target_projection
-            else "no_executable_candidate_plan"
-        ),
-    }
 
 
 def summarize_schema(schema: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -5413,57 +4434,6 @@ def summarize_analysis_response(analysis: Optional[Dict[str, Any]]) -> Optional[
     return summary
 
 
-def summarize_planner_result(planner: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return a compact summary of semantic planner output."""
-    if not isinstance(planner, dict):
-        return None
-
-    summary: Dict[str, Any] = {
-        "mode": planner.get("mode"),
-        "ready": bool(planner.get("ready")),
-    }
-    if planner.get("query_family"):
-        summary["query_family"] = planner.get("query_family")
-    if planner.get("requested_template"):
-        summary["requested_template"] = planner.get("requested_template")
-    if planner.get("effective_template"):
-        summary["effective_template"] = planner.get("effective_template")
-    if isinstance(planner.get("semantic_manifest_summary"), dict):
-        summary["semantic_manifest_summary"] = planner.get("semantic_manifest_summary")
-
-    slots = planner.get("slots")
-    if isinstance(slots, dict):
-        summary["slots"] = slots
-
-    request_ir = planner.get("request_ir")
-    if isinstance(request_ir, dict):
-        summary["request_ir"] = {
-            "query_family": request_ir.get("query_family"),
-            "anchors": request_ir.get("anchors"),
-            "constraints": request_ir.get("constraints"),
-            "output": request_ir.get("output"),
-        }
-
-    candidate_plans = planner.get("candidate_plans")
-    if isinstance(candidate_plans, list):
-        summary["candidate_count"] = len(candidate_plans)
-        if candidate_plans and isinstance(candidate_plans[0], dict):
-            selected_candidate = candidate_plans[0]
-            summary["selected_variant"] = selected_candidate.get("variant")
-            summary["selected_confidence_score"] = selected_candidate.get("confidence_score")
-            if selected_candidate.get("query_family"):
-                summary["selected_query_family"] = selected_candidate.get("query_family")
-            summary["source_class"] = selected_candidate.get("source_class")
-            summary["evidence_class"] = selected_candidate.get("evidence_class")
-            rationale = selected_candidate.get("rationale")
-            if isinstance(rationale, list):
-                summary["rationale"] = rationale
-            if isinstance(selected_candidate.get("node_plan"), dict):
-                summary["selected_node_plan"] = selected_candidate.get("node_plan")
-
-    return summary
-
-
 def sparql_row_count(sparql_response: Optional[Dict[str, Any]]) -> int:
     """Return the row count from a SPARQL response when available."""
     if not isinstance(sparql_response, dict):
@@ -5486,6 +4456,17 @@ def uri_local_name(value: Any) -> Optional[str]:
     if "#" in value:
         return value.rsplit("#", 1)[-1]
     return value.rstrip("/").rsplit("/", 1)[-1]
+
+
+def resource_instance_id(value: Any) -> Optional[str]:
+    """Return the instance-like suffix from a resource local name such as customer_CUST004 -> CUST004."""
+    local_name = value if isinstance(value, str) and not is_uri_like(value) else uri_local_name(value)
+    if not isinstance(local_name, str) or not local_name:
+        return None
+    if "_" not in local_name:
+        return None
+    suffix = local_name.rsplit("_", 1)[-1].strip()
+    return suffix or None
 
 
 def schema_class_label_map(schema: Optional[Dict[str, Any]]) -> Dict[str, str]:
@@ -5693,6 +4674,7 @@ def build_entity_display(
     )
 
     local_name = uri_local_name(source_uri)
+    display_id = display_id or resource_instance_id(local_name)
     return {
         "display_name": display_name or display_id or local_name,
         "display_id": display_id,
@@ -5729,6 +4711,7 @@ def build_evidence_items(
             literal_fields,
             ["id", "code", "编号"],
         )
+        display_id = display_id or resource_instance_id(evidence_uri)
 
         if display_label is None and evidence_uri is not None:
             display_label = class_label_for_uri(evidence_uri, class_labels) or uri_local_name(evidence_uri)
@@ -5839,6 +4822,7 @@ def build_reasoning_summary(
 
     mediator_uris: Set[str] = set()
     terminal_uris: Set[str] = set()
+    terminal_depths: Dict[str, int] = {}
 
     for path in paths:
         if not isinstance(path, list) or not path:
@@ -5850,6 +4834,7 @@ def build_reasoning_summary(
         terminal_uri = objects[-1]
         if terminal_uri not in direct_uris and terminal_uri != source_uri:
             terminal_uris.add(terminal_uri)
+            terminal_depths[terminal_uri] = max(terminal_depths.get(terminal_uri, 0), len(path))
 
         for uri in objects[1:-1]:
             if uri not in direct_uris and uri != source_uri:
@@ -5860,6 +4845,11 @@ def build_reasoning_summary(
         uri
         for uri in terminal_uris
         if uri not in mediator_uris and class_key_from_uri(uri) not in direct_type_keys
+    }
+    terminal_depths = {
+        uri: depth
+        for uri, depth in terminal_depths.items()
+        if uri in terminal_uris and isinstance(depth, int) and depth > 0
     }
 
     summary.update({
@@ -5873,9 +4863,300 @@ def build_reasoning_summary(
             "direct_uris": sorted(direct_uris),
             "mediator_uris": sorted(mediator_uris),
             "terminal_uris": sorted(terminal_uris),
+            "terminal_depths": terminal_depths,
         },
     })
     return summary
+
+
+def preferred_terminal_uris_from_trace_refs(trace_refs: Optional[Dict[str, Any]]) -> List[str]:
+    """Pick the structurally deepest terminal URIs from analyzer traces."""
+    if not isinstance(trace_refs, dict):
+        return []
+    terminal_depths = trace_refs.get("terminal_depths")
+    if not isinstance(terminal_depths, dict):
+        return []
+    normalized = {
+        str(uri): int(depth)
+        for uri, depth in terminal_depths.items()
+        if is_uri_like(uri) and isinstance(depth, int) and depth > 0
+    }
+    if not normalized:
+        return []
+    max_depth = max(normalized.values())
+    if max_depth <= 1:
+        return []
+    return sorted(uri for uri, depth in normalized.items() if depth == max_depth)
+
+
+def build_related_entity_detail_query(
+    schema: Optional[Dict[str, Any]],
+    class_name: str,
+    uris: List[str],
+    projection_properties: Dict[str, str],
+) -> Optional[str]:
+    """Build a deterministic detail query for a known class and URI set."""
+    if not isinstance(class_name, str) or not class_name or not uris:
+        return None
+    namespace = primary_namespace_from_schema(schema)
+    select_vars = ["?entity"] + [f"?{var_name}" for var_name in projection_properties]
+    query_lines = [
+        f"PREFIX ex: <{namespace}>",
+        "SELECT " + " ".join(select_vars),
+        "WHERE {",
+        "  VALUES ?entity { " + " ".join(f"<{uri}>" for uri in uris) + " }",
+        f"  ?entity a ex:{class_name} .",
+    ]
+    for var_name, property_name in projection_properties.items():
+        query_lines.append(f"  OPTIONAL {{ ?entity ex:{property_name} ?{var_name} . }}")
+    query_lines.append("}")
+    order_by = [var_name for var_name in ("detailId", "detailName", "detailType", "detailStatus") if var_name in projection_properties]
+    query_lines.append("ORDER BY " + (" ".join(f"?{var_name}" for var_name in order_by) if order_by else "?entity"))
+    return "\n".join(query_lines)
+
+
+def fetch_related_entity_details_for_class(
+    schema: Optional[Dict[str, Any]],
+    class_name: str,
+    uris: List[str],
+    base_url: str,
+    request_fn,
+    domain_properties: Dict[str, List[Dict[str, Any]]],
+    class_labels: Dict[str, str],
+    manifest: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fetch name/description/status-like details for a class-specific URI set."""
+    unique_uris = unique_preserve_order([str(uri) for uri in uris if is_uri_like(uri)])
+    group = {
+        "type_key": class_name,
+        "type_label": class_labels.get(class_name, class_name),
+        "record_count": len(unique_uris),
+        "records": [],
+    }
+    if not unique_uris:
+        return group
+
+    detail_manifest = manifest
+    if not isinstance(detail_manifest, dict):
+        detail_manifest = build_semantic_manifest(schema)
+    projection_properties = build_detail_projection_properties(
+        class_name,
+        domain_properties,
+        class_labels,
+        manifest=detail_manifest,
+    )
+    if detail_projection_needs_sample_support(
+        class_name,
+        projection_properties,
+        domain_properties,
+        manifest=detail_manifest,
+    ):
+        sampled_value_nodes = load_sample_value_nodes(base_url, detail_manifest, [class_name], limit=8)
+        if sampled_value_nodes:
+            detail_manifest = with_value_nodes(detail_manifest, sampled_value_nodes)
+            projection_properties = build_detail_projection_properties(
+                class_name,
+                domain_properties,
+                class_labels,
+                manifest=detail_manifest,
+            )
+
+    rows: List[Dict[str, Any]] = []
+    detail_query = build_related_entity_detail_query(schema, class_name, unique_uris, projection_properties)
+    if detail_query is not None:
+        detail_response = request_fn("POST", f"{base_url}/sparql", {"query": detail_query})
+        if isinstance(detail_response, dict) and isinstance(detail_response.get("results"), list):
+            rows = detail_response["results"]
+
+    records_by_uri: Dict[str, Dict[str, Any]] = {
+        uri: {
+            "uri": uri,
+            "local_name": uri_local_name(uri),
+            "display_id": None,
+            "display_name": None,
+            "display_label": None,
+            "display_description": None,
+            "display_status": None,
+            "display_type": None,
+            "display_score": None,
+            "display_fields": {},
+        }
+        for uri in unique_uris
+    }
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        entity_uri = row.get("entity")
+        if not is_uri_like(entity_uri) or entity_uri not in records_by_uri:
+            continue
+        record = records_by_uri[entity_uri]
+        field_updates = {
+            "display_id": row.get("detailId"),
+            "display_name": row.get("detailName"),
+            "display_type": row.get("detailType"),
+            "display_description": row.get("detailDescription"),
+            "display_status": row.get("detailStatus"),
+            "display_score": row.get("detailScore"),
+        }
+        for key, value in field_updates.items():
+            if not is_missing_literal_value(value):
+                record[key] = value
+        display_fields = record["display_fields"]
+        for var_name, value in row.items():
+            if var_name == "entity" or is_missing_literal_value(value):
+                continue
+            display_fields[var_name] = value
+
+    records = []
+    for uri in unique_uris:
+        record = records_by_uri[uri]
+        record["display_id"] = record.get("display_id") or resource_instance_id(uri)
+        display_name = (
+            record.get("display_name")
+            or record.get("display_type")
+            or record.get("display_id")
+            or record.get("local_name")
+        )
+        record["display_name"] = display_name
+        record["display_label"] = display_name
+        records.append(record)
+
+    records.sort(
+        key=lambda item: (
+            str(item.get("display_id") or ""),
+            str(item.get("display_name") or ""),
+            str(item.get("local_name") or ""),
+        )
+    )
+    group["records"] = records
+    group["record_count"] = len(records)
+    return group
+
+
+def build_related_terminal_detail_index(
+    schema: Optional[Dict[str, Any]],
+    sparql_spec: Optional[Dict[str, Any]],
+    sparql_response: Optional[Dict[str, Any]],
+    analysis_response: Optional[Dict[str, Any]],
+    analysis_meta: Optional[Dict[str, Any]],
+    base_url: str,
+    request_fn,
+    max_classes: int = 4,
+    max_entities_per_class: int = 5,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch structured details for analysis terminal entities, grouped by source URI."""
+    if not isinstance(schema, dict) or not isinstance(sparql_response, dict) or not isinstance(analysis_response, dict):
+        return {}
+
+    rows = sparql_response.get("results")
+    if not isinstance(rows, list) or not rows:
+        return {}
+
+    class_labels = schema_class_label_map(schema)
+    domain_properties = data_properties_by_domain(schema)
+    detail_manifest = build_semantic_manifest(schema)
+    source_var = choose_source_var(sparql_response, sparql_spec, analysis_meta)
+    if not isinstance(source_var, str) or not source_var:
+        return {}
+
+    grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_uri = row.get(source_var)
+        if is_uri_like(source_uri):
+            grouped_rows.setdefault(source_uri, []).append(row)
+    if not grouped_rows:
+        return {}
+
+    analysis_results_by_source: Dict[str, Dict[str, Any]] = {}
+    if isinstance(analysis_response.get("results"), list):
+        for item in analysis_response["results"]:
+            if isinstance(item, dict) and is_uri_like(item.get("source")):
+                analysis_results_by_source[item["source"]] = item
+    elif is_uri_like(analysis_response.get("source")):
+        analysis_results_by_source[analysis_response["source"]] = analysis_response
+
+    detail_index: Dict[str, List[Dict[str, Any]]] = {}
+    detail_cache: Dict[tuple[str, tuple[str, ...]], Dict[str, Any]] = {}
+
+    for source_uri, source_rows in grouped_rows.items():
+        evidence_var = choose_evidence_var(source_rows, source_var)
+        evidence_items = build_evidence_items(source_rows, source_var, evidence_var, class_labels)
+        reasoning_summary = build_reasoning_summary(
+            source_uri,
+            analysis_results_by_source.get(source_uri),
+            evidence_items,
+            class_labels,
+        )
+        terminal_summary = reasoning_summary.get("terminal_summary")
+        if not isinstance(terminal_summary, list) or not terminal_summary:
+            continue
+
+        terminal_details: List[Dict[str, Any]] = []
+        for item in terminal_summary[:max_classes]:
+            if not isinstance(item, dict):
+                continue
+            class_name = item.get("type_key")
+            refs = item.get("refs")
+            if not isinstance(class_name, str) or not class_name or not isinstance(refs, list):
+                continue
+            uris = unique_preserve_order([
+                ref.get("uri")
+                for ref in refs[:max_entities_per_class]
+                if isinstance(ref, dict) and is_uri_like(ref.get("uri"))
+            ])
+            if not uris:
+                continue
+            cache_key = (class_name, tuple(uris))
+            if cache_key not in detail_cache:
+                detail_cache[cache_key] = fetch_related_entity_details_for_class(
+                    schema,
+                    class_name,
+                    uris,
+                    base_url,
+                    request_fn,
+                    domain_properties,
+                    class_labels,
+                    manifest=detail_manifest,
+                )
+            terminal_details.append(deepcopy(detail_cache[cache_key]))
+
+        if terminal_details:
+            detail_index[source_uri] = terminal_details
+
+    return detail_index
+
+
+def flatten_terminal_detail_records(
+    detail_groups: List[Dict[str, Any]],
+    allowed_uris: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Flatten terminal detail groups into a stable record list, optionally scoped by URI."""
+    records: List[Dict[str, Any]] = []
+    for group in detail_groups:
+        if not isinstance(group, dict):
+            continue
+        for record in group.get("records", []):
+            if not isinstance(record, dict):
+                continue
+            record_uri = record.get("uri")
+            if allowed_uris is not None and record_uri not in allowed_uris:
+                continue
+            flattened = dict(record)
+            flattened["type_key"] = group.get("type_key")
+            flattened["type_label"] = group.get("type_label")
+            records.append(flattened)
+    records.sort(
+        key=lambda item: (
+            str(item.get("type_label") or ""),
+            str(item.get("display_id") or ""),
+            str(item.get("display_name") or ""),
+            str(item.get("local_name") or ""),
+        )
+    )
+    return records
 
 
 def extract_fact_metric_items(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -5938,6 +5219,9 @@ def build_causal_enumeration_presentation(
                     analysis_results_by_source[item["source"]] = item
         elif is_uri_like(analysis_response.get("source")):
             analysis_results_by_source[analysis_response["source"]] = analysis_response
+    related_terminal_details_by_source = {}
+    if isinstance(analysis_meta, dict) and isinstance(analysis_meta.get("related_terminal_details_by_source"), dict):
+        related_terminal_details_by_source = analysis_meta["related_terminal_details_by_source"]
 
     groups = []
     distinct_evidence_refs: Set[str] = set()
@@ -5960,6 +5244,9 @@ def build_causal_enumeration_presentation(
             for key, value in raw_reasoning_summary.items()
             if key != "trace_refs"
         }
+        related_terminal_details = deepcopy(related_terminal_details_by_source.get(source_uri, []))
+        if related_terminal_details:
+            reasoning_summary["terminal_details"] = deepcopy(related_terminal_details)
 
         trace_refs = dict(raw_reasoning_summary.get("trace_refs", {}))
         trace_refs.update({
@@ -5978,6 +5265,7 @@ def build_causal_enumeration_presentation(
             "metric_fields": extract_row_metric_fields(source_rows, source_var, evidence_var),
             "reasoning_summary": reasoning_summary,
             "trace_refs": trace_refs,
+            "related_terminal_details": related_terminal_details,
         })
 
     groups.sort(key=lambda item: (
@@ -6126,14 +5414,27 @@ def build_causal_lookup_presentation(
     for item in metric_items_from_fields(group.get("metric_fields", {})):
         if item not in metric_items:
             metric_items.append(item)
+    related_terminal_details = group.get("related_terminal_details", [])
+    preferred_terminal_uris = set(preferred_terminal_uris_from_trace_refs(group.get("trace_refs")))
+    target_details = (
+        flatten_terminal_detail_records(related_terminal_details, preferred_terminal_uris)
+        if isinstance(analysis_meta, dict) and analysis_meta.get("target_projection_requested")
+        else []
+    )
+    solution_details = target_details if isinstance(analysis_meta, dict) and analysis_meta.get("asks_solution") else []
+    preferred_section_order = [
+        "summary",
+        "entity_facts",
+        "entity_metrics",
+    ]
+    if target_details:
+        preferred_section_order.append("target_details")
+    if solution_details:
+        preferred_section_order.append("solution_details")
+    preferred_section_order.append("analysis_note")
     answer_contract = {
         "version": "causal_lookup_stable_v1",
-        "preferred_section_order": [
-            "summary",
-            "entity_facts",
-            "entity_metrics",
-            "analysis_note",
-        ],
+        "preferred_section_order": preferred_section_order,
         "count_contract": {
             "primary_count_field": "entity_count",
             "primary_count_label": "实体数",
@@ -6167,6 +5468,26 @@ def build_causal_lookup_presentation(
             "brief_only": True,
         },
     }
+    if target_details:
+        answer_contract["target_details"] = [
+            {
+                "type_label": item.get("type_label"),
+                "target_id": item.get("display_id"),
+                "target_name": item.get("display_name"),
+                "target_description": item.get("display_description"),
+            }
+            for item in target_details
+        ]
+    if solution_details:
+        answer_contract["solution_details"] = [
+            {
+                "type_label": item.get("type_label"),
+                "solution_id": item.get("display_id"),
+                "solution_name": item.get("display_name"),
+                "solution_description": item.get("display_description"),
+            }
+            for item in solution_details
+        ]
     return {
         "template": "causal_lookup",
         "summary": enumeration_like.get("summary"),
@@ -6175,6 +5496,9 @@ def build_causal_lookup_presentation(
         "facts": facts,
         "key_metrics": metric_items,
         "reasoning_summary": group.get("reasoning_summary"),
+        "related_terminal_details": related_terminal_details,
+        "target_details": target_details,
+        "solution_details": solution_details,
         "trace_refs": group.get("trace_refs"),
         "answer_contract": answer_contract,
     }
@@ -6342,246 +5666,23 @@ def _build_single_question_mode_run_response(
     slots_override: Optional[Dict[str, Any]] = None,
     unit_intent_ir: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Return a planning bundle for one QUESTION + TEMPLATE shorthand."""
-    template_config = RUN_TEMPLATES.get(template)
-    if template_config is None:
-        supported = ", ".join(sorted(RUN_TEMPLATES))
-        raise SystemExit(f"Unknown run template: {template}. Supported templates: {supported}")
-
-    if schema is None:
-        schema = request_json("GET", f"{base_url}/schema")
-        write_schema_state(state_file, base_url)
-
-    planner = build_semantic_query_planner(
+    """Return a planning bundle through the repo-owned single-question runtime layer."""
+    return runtime_build_single_question_mode_run_response(
+        base_url,
         question,
         template,
-        schema,
-        base_url=base_url,
+        state_file,
+        run_templates=RUN_TEMPLATES,
+        request_schema=lambda request_base_url: request_json("GET", f"{request_base_url}/schema"),
+        request_profiles=lambda request_base_url: request_json("GET", f"{request_base_url}/analysis/profiles"),
+        write_schema_state=write_schema_state,
+        build_semantic_query_planner=build_semantic_query_planner,
+        summarize_schema=summarize_schema,
+        summarize_profiles=summarize_profiles,
+        schema=schema,
         slots_override=slots_override,
         unit_intent_ir=unit_intent_ir,
     )
-    effective_template = template
-    if isinstance(planner, dict) and isinstance(planner.get("effective_template"), str) and planner.get("effective_template"):
-        effective_template = planner["effective_template"]
-        effective_config = RUN_TEMPLATES.get(effective_template)
-        if effective_config is not None:
-            template_config = effective_config
-
-    profiles = None
-    if template_config["auto_include_profiles"]:
-        profiles = request_json("GET", f"{base_url}/analysis/profiles")
-
-    plan_skeleton: Dict[str, Any] = {"template": effective_template}
-    required_fields = []
-    if isinstance(planner, dict) and isinstance(planner.get("selected_plan"), dict):
-        plan_skeleton = planner["selected_plan"]
-        if isinstance(plan_skeleton.get("template"), str) and plan_skeleton.get("template"):
-            effective_template = plan_skeleton["template"]
-
-    if template_config["requires_sparql"] and "sparql" not in plan_skeleton:
-        if effective_template in ("causal_lookup", "causal_enumeration"):
-            required_fields.append("sparql.builder")
-            source_var = "source"
-            evidence_var = "evidence"
-            builder = {
-                "source_class": "SourceClass",
-                "source_var": source_var,
-                "evidence_class": "EvidenceClass",
-                "evidence_var": evidence_var,
-                "select": [
-                    {"var": source_var, "kind": "uri"},
-                    {"var": "sourceName", "subject": "source", "property": "source_name"},
-                    {"var": "sourceId", "subject": "source", "property": "source_id"},
-                    {"var": evidence_var, "kind": "uri"},
-                    {"var": "evidenceType", "subject": "evidence", "property": "evidence_type"},
-                    {"var": "evidenceDescription", "subject": "evidence", "property": "evidence_description"},
-                ],
-                "filters": (
-                    [{"var": "sourceId", "op": "equals", "value": "ID_123"}]
-                    if effective_template == "causal_lookup"
-                    else [{"var": "evidenceType", "op": "contains_any", "values": ["keyword1", "keyword2"]}]
-                ),
-                "distinct": True,
-                "order_by": ["sourceId", "evidenceType"],
-            }
-            plan_skeleton["sparql"] = {
-                "source_var": source_var,
-                "builder": builder,
-            }
-        else:
-            required_fields.append("sparql.query")
-            plan_skeleton["sparql"] = {
-                "query": (
-                    "PREFIX ex: <http://example.com/ontology#>\n"
-                    "SELECT ?entity\n"
-                    "WHERE {\n"
-                    "  ?entity a ex:TargetClass .\n"
-                    "}\n"
-                    "LIMIT 10"
-                )
-            }
-
-    analysis_kind = template_config["default_analysis_kind"]
-    if template_config["requires_analysis"] and analysis_kind and "analysis" not in plan_skeleton:
-        required_fields.append("analysis.payload")
-        analysis_payload: Dict[str, Any]
-        if analysis_kind == "paths":
-            analysis_payload = {
-                "mode": "paths",
-                "profile": "default",
-                "max_depth": 3,
-            }
-        elif analysis_kind == "paths-batch":
-            analysis_payload = {
-                "mode": "paths",
-                "profile": "default",
-                "max_depth": 3,
-            }
-        elif analysis_kind == "inferred-relations":
-            analysis_payload = {
-                "mode": "inferred-relations",
-                "profile": "inference",
-                "source": "http://example.com/ontology#entity_123",
-                "max_depth": 3,
-            }
-        else:
-            analysis_payload = {"mode": analysis_kind}
-
-        plan_skeleton["analysis"] = {
-            "kind": analysis_kind,
-            "payload": analysis_payload,
-        }
-
-    plan_ready = bool(isinstance(planner, dict) and planner.get("ready"))
-    if plan_ready:
-        required_fields = []
-
-    response: Dict[str, Any] = {
-        "mode": "question-template",
-        "status": "planner_suggested" if plan_ready else "planning_required",
-        "question": question,
-        "template": effective_template,
-        "message": (
-            "Planning-only mode fetched schema first and routed the question through the semantic query planner. "
-            "Use this only for debugging or inspection; normal QUESTION + --template flow executes the locked planner plan automatically."
-        ),
-        "required_fields": required_fields,
-        "plan_skeleton": plan_skeleton,
-        "planner": planner,
-        "plan_executable": plan_ready,
-        "rules": [
-            "Normal QUESTION + --template flow executes automatically; use --plan-only only when you explicitly need the planner bundle.",
-            "Do not hand-write GET /analysis/paths query strings; use analysis-paths --json or analysis-paths-batch --json.",
-            "Use schema to verify domains before writing SPARQL.",
-            "For causal templates, prefer sparql.builder over raw sparql.query so the client can validate link direction and required anchor columns before execution.",
-            "If the planner is low-confidence or ambiguous, do not guess; refine one slot or ask for clarification.",
-        ],
-        "schema_summary": summarize_schema(schema),
-        "schema_included": False,
-    }
-    if effective_template != template:
-        response["requested_template"] = template
-        response["effective_template"] = effective_template
-    elif isinstance(planner, dict) and planner.get("query_family"):
-        response["effective_template"] = effective_template
-    if isinstance(planner, dict) and planner.get("query_family"):
-        response["query_family"] = planner.get("query_family")
-    if profiles is not None:
-        response["profiles_summary"] = summarize_profiles(profiles)
-        response["profiles_included"] = False
-    if isinstance(unit_intent_ir, dict):
-        response["intent_ir"] = unit_intent_ir
-    return response
-
-
-def summarize_batch_unit_response(response: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a compact per-unit summary for multi-answer presentation."""
-    summary = {
-        "status": response.get("status"),
-        "template": response.get("effective_template") or response.get("template"),
-        "query_family": response.get("query_family"),
-    }
-    if isinstance(response.get("presentation"), dict):
-        presentation = response["presentation"]
-        if isinstance(presentation.get("summary"), dict):
-            summary["result_summary"] = presentation["summary"]
-    planner = response.get("planner")
-    if isinstance(planner, dict) and planner.get("reason"):
-        summary["planner_reason"] = planner.get("reason")
-    if response.get("blocked_reason"):
-        summary["blocked_reason"] = response.get("blocked_reason")
-    return summary
-
-
-def extract_focus_refs_from_response(response: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract focus identifiers from a unit response for conversation state."""
-    focus: Dict[str, Any] = {
-        "entity_ids": [],
-        "entity_names": [],
-        "entity_uris": [],
-        "entity_local_names": [],
-        "entity_classes": [],
-        "value_labels": [],
-        "grain": None,
-        "entity_class": None,
-    }
-    presentation = response.get("presentation")
-    if not isinstance(presentation, dict):
-        return focus
-
-    def collect_entity_info(entity_info: Dict[str, Any]) -> None:
-        if not isinstance(entity_info, dict):
-            return
-        if entity_info.get("display_id"):
-            focus["entity_ids"].append(entity_info.get("display_id"))
-        if entity_info.get("display_name"):
-            focus["entity_names"].append(entity_info.get("display_name"))
-        uri = entity_info.get("uri")
-        if is_uri_like(uri):
-            focus["entity_uris"].append(uri)
-            class_key = class_key_from_uri(uri)
-            if class_key:
-                focus["entity_classes"].append(class_key)
-        local_name = entity_info.get("local_name")
-        if isinstance(local_name, str) and local_name:
-            focus["entity_local_names"].append(local_name)
-            class_key = class_key_from_uri(local_name)
-            if class_key:
-                focus["entity_classes"].append(class_key)
-
-    entity = presentation.get("entity")
-    if isinstance(entity, dict):
-        focus["grain"] = "entity"
-        collect_entity_info(entity)
-
-    groups = presentation.get("groups")
-    if isinstance(groups, list):
-        focus["grain"] = "entity_set"
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            entity_info = group.get("entity")
-            collect_entity_info(entity_info)
-
-    items = presentation.get("items")
-    if isinstance(items, list):
-        if focus["grain"] is None:
-            focus["grain"] = "rows"
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if item.get("value_label"):
-                focus["value_labels"].append(item.get("value_label"))
-
-    focus["entity_ids"] = unique_preserve_order([str(item) for item in focus["entity_ids"] if item])
-    focus["entity_names"] = unique_preserve_order([str(item) for item in focus["entity_names"] if item])
-    focus["entity_uris"] = unique_preserve_order([str(item) for item in focus["entity_uris"] if item])
-    focus["entity_local_names"] = unique_preserve_order([str(item) for item in focus["entity_local_names"] if item])
-    focus["entity_classes"] = unique_preserve_order([str(item) for item in focus["entity_classes"] if item])
-    focus["value_labels"] = unique_preserve_order([str(item) for item in focus["value_labels"] if item])
-    if focus["entity_classes"]:
-        focus["entity_class"] = focus["entity_classes"][0]
-    return focus
 
 
 def build_conversation_state_entry(
@@ -6590,263 +5691,40 @@ def build_conversation_state_entry(
     intent_ir: Dict[str, Any],
     response: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Build carry-forward conversation state for one executed/planned unit."""
-    focus_refs = extract_focus_refs_from_response(response)
-    semantic_state = semantic_state_from_sources(slots, intent_ir)
-    return {
-        "unit_id": unit.get("unit_id"),
-        "anchors": deepcopy(semantic_state.get("anchors", [])),
-        "has_anchor": bool(semantic_state.get("has_anchor")),
-        "bootstrap_signals": deepcopy(slots.get("bootstrap_signals", {}))
-        if isinstance(slots.get("bootstrap_signals"), dict)
-        else {},
-        "bootstrap_candidates": deepcopy(slots.get("bootstrap_candidates", {}))
-        if isinstance(slots.get("bootstrap_candidates"), dict)
-        else {},
-        "status_numeric_constraint": deepcopy(semantic_state.get("status_numeric_constraint")),
-        "intent_ir": deepcopy(intent_ir),
-        "focus": focus_refs,
-        "query_family": response.get("query_family"),
-        "effective_template": response.get("effective_template") or response.get("template"),
-        "status": response.get("status"),
-    }
-
-
-def conversation_state_has_material_focus(state: Optional[Dict[str, Any]]) -> bool:
-    """Whether a conversation state carries a concrete entity/value focus."""
-    if not isinstance(state, dict):
-        return False
-    focus = state.get("focus")
-    if not isinstance(focus, dict):
-        return False
-    for key in ("entity_uris", "entity_ids", "entity_local_names", "value_labels"):
-        values = focus.get(key)
-        if isinstance(values, list) and values:
-            return True
-    return False
-
-
-def find_conversation_state_by_unit_id(
-    conversation_states: List[Dict[str, Any]],
-    unit_id: Optional[str],
-) -> Optional[Dict[str, Any]]:
-    """Locate one conversation state entry by unit id."""
-    if not isinstance(unit_id, str) or not unit_id:
-        return None
-    for state in conversation_states:
-        if isinstance(state, dict) and state.get("unit_id") == unit_id:
-            return state
-    return None
+    """Build carry-forward conversation state through the repo-owned runtime layer."""
+    return runtime_build_conversation_state_entry(
+        unit,
+        slots,
+        intent_ir,
+        response,
+        extract_focus_refs_from_response=lambda item: runtime_extract_focus_refs_from_response(
+            item,
+            is_uri_like=is_uri_like,
+            class_key_from_uri=class_key_from_uri,
+            unique_preserve_order=unique_preserve_order,
+        ),
+        semantic_state_from_sources=semantic_state_from_sources,
+    )
 
 
 def resolve_reference_context(
     unit: Dict[str, Any],
     conversation_states: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Resolve lightweight discourse references against executed conversation state."""
-    if not isinstance(unit, dict):
-        return None
-    dependency = unit.get("dependency")
-    reference_markers = unit.get("reference_markers", [])
-    candidate_states: List[Dict[str, Any]] = []
-
-    if isinstance(dependency, dict) and isinstance(dependency.get("depends_on"), str):
-        matched = find_conversation_state_by_unit_id(conversation_states, dependency.get("depends_on"))
-        if isinstance(matched, dict):
-            candidate_states.append(matched)
-
-    for state in reversed(conversation_states):
-        if not isinstance(state, dict):
-            continue
-        if any(existing.get("unit_id") == state.get("unit_id") for existing in candidate_states if isinstance(existing, dict)):
-            continue
-        candidate_states.append(state)
-
-    selected_state = next((state for state in candidate_states if conversation_state_has_material_focus(state)), None)
-    if not isinstance(selected_state, dict):
-        return None
-
-    focus = selected_state.get("focus")
-    if not isinstance(focus, dict):
-        return None
-
-    return {
-        "from_unit_id": selected_state.get("unit_id"),
-        "markers": list(reference_markers) if isinstance(reference_markers, list) else [],
-        "entity_ids": deepcopy(focus.get("entity_ids", [])),
-        "entity_names": deepcopy(focus.get("entity_names", [])),
-        "entity_uris": deepcopy(focus.get("entity_uris", [])),
-        "entity_local_names": deepcopy(focus.get("entity_local_names", [])),
-        "entity_class": focus.get("entity_class"),
-        "grain": focus.get("grain"),
-        "query_family": selected_state.get("query_family"),
-        "effective_template": selected_state.get("effective_template"),
-        "status": selected_state.get("status"),
-    }
+    """Resolve lightweight discourse references through the repo-owned runtime layer."""
+    return runtime_resolve_reference_context(unit, conversation_states)
 
 
 def apply_resolved_reference_to_slots(
     slots: Dict[str, Any],
     resolved_reference: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Attach resolved conversation references to slot state for later grounding/lowering."""
-    merged = dict(slots)
-    for key in (
-        "reference_entity_ids",
-        "reference_entity_names",
-        "reference_entity_uris",
-        "reference_entity_local_names",
-        "reference_entity_class",
-        "reference_grain",
-        "reference_from_unit_id",
-        "resolved_reference",
-    ):
-        merged.pop(key, None)
-
-    if merged.get("has_explicit_anchor"):
-        return merged
-
-    if not isinstance(resolved_reference, dict):
-        return merged
-
-    entity_ids = unique_preserve_order([
-        str(item) for item in resolved_reference.get("entity_ids", [])
-        if isinstance(item, str) and item
-    ])
-    entity_names = unique_preserve_order([
-        str(item) for item in resolved_reference.get("entity_names", [])
-        if isinstance(item, str) and item
-    ])
-    entity_uris = unique_preserve_order([
-        str(item) for item in resolved_reference.get("entity_uris", [])
-        if isinstance(item, str) and item
-    ])
-    entity_local_names = unique_preserve_order([
-        str(item) for item in resolved_reference.get("entity_local_names", [])
-        if isinstance(item, str) and item
-    ])
-    if not any((entity_ids, entity_names, entity_uris, entity_local_names)):
-        return merged
-
-    merged["reference_entity_ids"] = entity_ids
-    merged["reference_entity_names"] = entity_names
-    merged["reference_entity_uris"] = entity_uris
-    merged["reference_entity_local_names"] = entity_local_names
-    merged["reference_entity_class"] = resolved_reference.get("entity_class")
-    merged["reference_grain"] = resolved_reference.get("grain")
-    merged["reference_from_unit_id"] = resolved_reference.get("from_unit_id")
-    merged["resolved_reference"] = deepcopy(resolved_reference)
-    return merged
-
-
-def evaluate_dependency_condition(
-    condition_type: Optional[str],
-    dependency_response: Optional[Dict[str, Any]],
-) -> bool:
-    """Evaluate whether a dependency condition is satisfied."""
-    if not isinstance(dependency_response, dict):
-        return False
-
-    status = dependency_response.get("status")
-    presentation = dependency_response.get("presentation")
-    material_result = False
-    if isinstance(presentation, dict) and isinstance(presentation.get("summary"), dict):
-        summary = presentation["summary"]
-        for key in ("entity_count", "record_count", "value_count", "evidence_count"):
-            value = summary.get(key)
-            if isinstance(value, int) and value > 0:
-                material_result = True
-                break
-    if not material_result and isinstance(dependency_response.get("sparql"), dict):
-        material_result = sparql_row_count(dependency_response.get("sparql")) > 0
-
-    if condition_type == "empty_or_false":
-        return status in ("empty_result", "planning_required") or not material_result
-    return status in ("ok", "partial_success") and material_result
-
-
-def build_execution_dag(question_units: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Represent QuestionUnit dependencies as a small execution DAG."""
-    nodes = []
-    edges = []
-    for unit in question_units:
-        nodes.append({
-            "unit_id": unit.get("unit_id"),
-            "text": unit.get("text"),
-        })
-        dependency = unit.get("dependency")
-        if isinstance(dependency, dict) and dependency.get("depends_on"):
-            edges.append({
-                "from": dependency.get("depends_on"),
-                "to": unit.get("unit_id"),
-                "condition": dependency.get("condition"),
-            })
-    return {"nodes": nodes, "edges": edges}
-
-
-def build_question_batch_presentation(
-    utterance: str,
-    unit_results: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Build a structured multi-answer presentation for batch execution."""
-    executed_count = 0
-    blocked_count = 0
-    planning_required_count = 0
-    items = []
-
-    for item in unit_results:
-        response = item.get("response", {})
-        status = response.get("status")
-        if status in ("ok", "partial_success", "empty_result"):
-            executed_count += 1
-        elif status == "skipped":
-            blocked_count += 1
-        elif status == "planning_required":
-            planning_required_count += 1
-
-        items.append({
-            "unit_id": item.get("unit_id"),
-            "text": item.get("text"),
-            "status": status,
-            "summary": summarize_batch_unit_response(response if isinstance(response, dict) else {}),
-        })
-
-    answer_contract = {
-        "version": "question_batch_v1",
-        "preferred_section_order": [
-            "summary",
-            "unit_answers",
-        ],
-    }
-
-    return {
-        "template": "question_batch",
-        "summary": {
-            "utterance": utterance,
-            "unit_count": len(unit_results),
-            "executed_count": executed_count,
-            "blocked_count": blocked_count,
-            "planning_required_count": planning_required_count,
-        },
-        "items": items,
-        "answer_contract": answer_contract,
-    }
-
-
-def compute_batch_execution_status(unit_results: List[Dict[str, Any]]) -> str:
-    """Summarize overall batch execution status without overstating success."""
-    statuses = [
-        item.get("response", {}).get("status")
-        for item in unit_results
-        if isinstance(item, dict) and isinstance(item.get("response"), dict)
-    ]
-    if any(status in ("ok", "partial_success", "empty_result") for status in statuses):
-        return "batch_executed"
-    if any(status == "planning_required" for status in statuses):
-        return "planning_required"
-    if any(status == "skipped" for status in statuses):
-        return "skipped"
-    return "planning_required"
+    """Attach resolved references through the repo-owned runtime layer."""
+    return runtime_apply_resolved_reference_to_slots(
+        slots,
+        resolved_reference,
+        unique_preserve_order=unique_preserve_order,
+    )
 
 
 def build_question_batch_run_response(
@@ -6855,71 +5733,20 @@ def build_question_batch_run_response(
     template: str,
     state_file: Path,
 ) -> Dict[str, Any]:
-    """Plan a multi-question utterance as a batch of QuestionUnits."""
-    schema = request_json("GET", f"{base_url}/schema")
-    write_schema_state(state_file, base_url)
-
-    question_units = decompose_utterance_to_question_units(question)
-    unit_plans = []
-    conversation_states = []
-    inherited_context = None
-
-    for unit in question_units:
-        slots = extract_question_slots(
-            unit["text"],
-            template,
-            inherited_context=inherited_context,
-            question_unit=unit,
-        )
-        intent_ir = build_question_unit_intent_ir(unit, slots, template)
-        response = _build_single_question_mode_run_response(
-            base_url,
-            unit["text"],
-            template,
-            state_file,
-            schema=schema,
-            slots_override=slots,
-            unit_intent_ir=intent_ir,
-        )
-        unit_entry = {
-            "unit_id": unit.get("unit_id"),
-            "text": unit.get("text"),
-            "raw_text": unit.get("raw_text"),
-            "dependency": deepcopy(unit.get("dependency")),
-            "reference_markers": list(unit.get("reference_markers", [])),
-            "resolved_slots": slots,
-            "intent_ir": intent_ir,
-            "response": response,
-        }
-        unit_plans.append(unit_entry)
-        inherited_context = build_conversation_state_entry(unit, slots, intent_ir, response)
-        conversation_states.append(inherited_context)
-
-    executable_count = sum(
-        1 for item in unit_plans
-        if isinstance(item.get("response"), dict) and item["response"].get("plan_executable")
+    """Plan a multi-question utterance through the repo-owned runtime layer."""
+    return runtime_build_question_batch_run_response(
+        base_url,
+        question,
+        template,
+        state_file,
+        request_schema=lambda request_base_url: request_json("GET", f"{request_base_url}/schema"),
+        write_schema_state=write_schema_state,
+        merge_inherited_slots=merge_inherited_slots,
+        build_question_unit_intent_ir=build_question_unit_intent_ir,
+        build_single_question_mode_run_response=_build_single_question_mode_run_response,
+        build_conversation_state_entry=build_conversation_state_entry,
+        summarize_schema=summarize_schema,
     )
-    overall_status = "batch_planner_suggested" if executable_count else "planning_required"
-
-    return {
-        "mode": "question-batch-template",
-        "status": overall_status,
-        "question": question,
-        "template": template,
-        "question_units": unit_plans,
-        "execution_dag": build_execution_dag(question_units),
-        "conversation_state": {
-            "last_unit_id": conversation_states[-1]["unit_id"] if conversation_states else None,
-            "units": conversation_states,
-        },
-        "presentation": build_question_batch_presentation(question, unit_plans),
-        "schema_summary": summarize_schema(schema),
-        "schema_included": False,
-        "message": (
-            "Planning-only mode decomposed the utterance into QuestionUnits, built Intent IR, "
-            "resolved lightweight references, and planned each unit independently."
-        ),
-    }
 
 
 def build_question_mode_run_response(
@@ -6928,103 +5755,20 @@ def build_question_mode_run_response(
     template: str,
     state_file: Path,
 ) -> Dict[str, Any]:
-    """Return a planning bundle for QUESTION + TEMPLATE shorthand."""
-    question_units = decompose_utterance_to_question_units(question)
-    if len(question_units) > 1:
-        return build_question_batch_run_response(base_url, question, template, state_file)
-    single_unit = question_units[0] if question_units else {"unit_id": "q1", "text": question, "reference_markers": []}
-    slots = extract_question_slots(question, template, question_unit=single_unit)
-    intent_ir = build_question_unit_intent_ir(single_unit, slots, template)
-    return _build_single_question_mode_run_response(
+    """Return a planning bundle through the repo-owned runtime layer."""
+    return runtime_build_question_mode_run_response(
         base_url,
         question,
         template,
         state_file,
-        slots_override=slots,
-        unit_intent_ir=intent_ir,
+        request_schema=lambda request_base_url: request_json("GET", f"{request_base_url}/schema"),
+        write_schema_state=write_schema_state,
+        merge_inherited_slots=merge_inherited_slots,
+        build_question_unit_intent_ir=build_question_unit_intent_ir,
+        build_single_question_mode_run_response=_build_single_question_mode_run_response,
+        build_conversation_state_entry=build_conversation_state_entry,
+        summarize_schema=summarize_schema,
     )
-
-
-def apply_fail_closed_contract_to_question_response(response: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip executable-looking scaffolding from non-executable question-mode responses."""
-    contracted = dict(response)
-    contracted["plan_executable"] = False
-    contracted["manual_fallback_allowed"] = False
-    contracted["planner_bundle_available_via_plan_only"] = True
-    contracted["next_action"] = "stop_or_use_plan_only_for_debug"
-    planner = contracted.get("planner")
-    if isinstance(planner, dict) and isinstance(planner.get("clarification_hint"), dict):
-        contracted["clarification_hint"] = deepcopy(planner["clarification_hint"])
-    clarification_hint = contracted.get("clarification_hint")
-    if isinstance(clarification_hint, dict) and clarification_hint.get("requires_user_clarification"):
-        contracted["next_action"] = "ask_user_for_clarification"
-        contracted["user_clarification_prompt"] = clarification_hint.get("user_clarification_prompt")
-    contracted["recovery_policy"] = {
-        "mode": "fail_closed",
-        "manual_exploration_allowed": False,
-        "bounded_recovery_allowed": bool(contracted.get("recovery_hint")),
-        "requires_plan_only_for_debug": True,
-        "requires_user_clarification": bool(
-            isinstance(clarification_hint, dict) and clarification_hint.get("requires_user_clarification")
-        ),
-    }
-    rules = list(contracted.get("rules", [])) if isinstance(contracted.get("rules"), list) else []
-    rule = (
-        "If question-mode returns planning_required and no recovery_hint is present, stop. "
-        "Do not switch to manual sparql/sample exploration in the same turn."
-    )
-    if rule not in rules:
-        rules.append(rule)
-    contracted["rules"] = rules
-    contracted.pop("plan_skeleton", None)
-    contracted.pop("required_fields", None)
-    return contracted
-
-
-def apply_fail_closed_contract_to_batch_response(response: Dict[str, Any]) -> Dict[str, Any]:
-    """Surface top-level clarification guidance for batch question-mode failures."""
-    contracted = dict(response)
-    contracted["manual_fallback_allowed"] = False
-    contracted["planner_bundle_available_via_plan_only"] = True
-    contracted["next_action"] = "stop_or_use_plan_only_for_debug"
-    clarification_hint = None
-    clarification_unit_id = None
-    for unit in contracted.get("question_units", []):
-        if not isinstance(unit, dict):
-            continue
-        unit_response = unit.get("response")
-        if not isinstance(unit_response, dict):
-            continue
-        unit_hint = unit_response.get("clarification_hint")
-        if isinstance(unit_hint, dict):
-            clarification_hint = deepcopy(unit_hint)
-            clarification_unit_id = unit.get("unit_id")
-            break
-    if isinstance(clarification_hint, dict):
-        contracted["clarification_hint"] = clarification_hint
-        if isinstance(clarification_unit_id, str) and clarification_unit_id:
-            contracted["clarification_target_unit"] = clarification_unit_id
-        if clarification_hint.get("requires_user_clarification"):
-            contracted["next_action"] = "ask_user_for_clarification"
-            contracted["user_clarification_prompt"] = clarification_hint.get("user_clarification_prompt")
-    contracted["recovery_policy"] = {
-        "mode": "fail_closed",
-        "manual_exploration_allowed": False,
-        "bounded_recovery_allowed": False,
-        "requires_plan_only_for_debug": True,
-        "requires_user_clarification": bool(
-            isinstance(clarification_hint, dict) and clarification_hint.get("requires_user_clarification")
-        ),
-    }
-    rules = list(contracted.get("rules", [])) if isinstance(contracted.get("rules"), list) else []
-    rule = (
-        "If question-mode returns planning_required and no recovery_hint is present, stop. "
-        "Do not switch to manual sparql/sample exploration in the same turn."
-    )
-    if rule not in rules:
-        rules.append(rule)
-    contracted["rules"] = rules
-    return contracted
 
 
 def _execute_single_question_mode_run(
@@ -7035,134 +5779,21 @@ def _execute_single_question_mode_run(
     include_planner_debug: bool = False,
     planning_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Plan and execute one QUESTION + TEMPLATE shorthand with a locked planner-selected plan."""
-    planning = planning_override or _build_single_question_mode_run_response(base_url, question, template, state_file)
-    if not planning.get("plan_executable"):
-        planning["message"] = (
-            "QUESTION + --template fetched schema first but could not produce a high-confidence executable plan."
-        )
-        return apply_fail_closed_contract_to_question_response(planning)
-
-    planner = planning.get("planner")
-    candidate_plans = []
-    if isinstance(planner, dict) and isinstance(planner.get("candidate_plans"), list):
-        candidate_plans = [item for item in planner["candidate_plans"] if isinstance(item, dict)]
-
-    selected_candidate = candidate_plans[0] if candidate_plans else None
-    locked_plan = planning.get("plan_skeleton")
-    if selected_candidate and isinstance(selected_candidate.get("plan"), dict):
-        locked_plan = selected_candidate["plan"]
-    if not isinstance(locked_plan, dict):
-        raise SystemExit("Question-mode planner did not return a valid executable plan.")
-
-    def summarize_attempt(candidate: Optional[Dict[str, Any]], result: Dict[str, Any]) -> Dict[str, Any]:
-        attempt = {
-            "status": result.get("status"),
-            "row_count": sparql_row_count(result.get("sparql")),
-        }
-        if isinstance(candidate, dict):
-            attempt["variant"] = candidate.get("variant")
-            attempt["confidence_score"] = candidate.get("confidence_score")
-            attempt["rationale"] = candidate.get("rationale")
-        return attempt
-
-    def attempt_score(candidate: Optional[Dict[str, Any]], result: Dict[str, Any]) -> tuple:
-        status = result.get("status")
-        status_score = 2 if status == "ok" else 1 if status == "partial_success" else 0
-        row_count = sparql_row_count(result.get("sparql"))
-        confidence = candidate.get("confidence_score") if isinstance(candidate, dict) else 0
-        return (status_score, row_count, confidence)
-
-    def try_execute_candidate_plan(
-        candidate: Optional[Dict[str, Any]],
-        plan: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        try:
-            return execute_run_plan(base_url, plan, state_file)
-        except SystemExit as exc:
-            return {
-                "status": "execution_error",
-                "template": plan.get("template") if isinstance(plan.get("template"), str) else template,
-                "error": str(exc),
-            }
-
-    executed = try_execute_candidate_plan(selected_candidate, locked_plan)
-    if executed.get("status") == "execution_error":
-        raise SystemExit(executed.get("error") or "Question-mode planner selected an invalid executable plan.")
-    attempts = [summarize_attempt(selected_candidate, executed)]
-    chosen_candidate = selected_candidate
-
-    relaxed_candidates = [
-        candidate
-        for candidate in candidate_plans[1:]
-        if str(candidate.get("variant", "")).endswith("_relaxed")
-    ]
-
-    primary_row_count = sparql_row_count(executed.get("sparql"))
-    should_try_relaxed = (
-        template == "causal_enumeration"
-        and bool(relaxed_candidates)
-        and (
-            executed.get("status") == "empty_result"
-            or (
-                executed.get("status") == "ok"
-                and primary_row_count <= 1
-                and isinstance(selected_candidate, dict)
-                and (
-                    selected_candidate.get("variant") in ("cause_and_action", "same_evidence_strict")
-                    or (
-                        isinstance(selected_candidate.get("rationale"), list)
-                        and "cause_term_grounded" in selected_candidate["rationale"]
-                        and "action_term_grounded" in selected_candidate["rationale"]
-                    )
-                )
-            )
-        )
+    """Plan and execute one question through the repo-owned single-question runtime layer."""
+    return runtime_execute_single_question_mode_run(
+        base_url,
+        question,
+        template,
+        state_file,
+        include_planner_debug=include_planner_debug,
+        build_single_question_mode_run_response=_build_single_question_mode_run_response,
+        execute_run_plan=execute_run_plan,
+        sparql_row_count=sparql_row_count,
+        summarize_planner_result=compiler_summarize_planner_result,
+        apply_fail_closed_contract_to_question_response=apply_fail_closed_contract_to_question_response,
+        apply_bounded_recovery_contract_to_question_response=apply_bounded_recovery_contract_to_question_response,
+        planning_override=planning_override,
     )
-
-    if should_try_relaxed:
-        best_result = executed
-        best_candidate = chosen_candidate
-        best_score = attempt_score(chosen_candidate, executed)
-        for relaxed_candidate in relaxed_candidates:
-            if not isinstance(relaxed_candidate.get("plan"), dict):
-                continue
-            relaxed_result = try_execute_candidate_plan(relaxed_candidate, relaxed_candidate["plan"])
-            attempts.append(summarize_attempt(relaxed_candidate, relaxed_result))
-            relaxed_score = attempt_score(relaxed_candidate, relaxed_result)
-            if relaxed_score > best_score:
-                best_result = relaxed_result
-                best_candidate = relaxed_candidate
-                best_score = relaxed_score
-        executed = best_result
-        chosen_candidate = best_candidate
-
-    response = dict(executed)
-    effective_template = response.get("template") if isinstance(response.get("template"), str) else template
-    response.update({
-        "mode": "question-template",
-        "question": question,
-        "template": effective_template,
-        "execution_mode": "question_auto_execute",
-        "plan_locked": True,
-        "plan_executable": True,
-        "message": (
-            "QUESTION + --template fetched schema first, planned a locked query, "
-            "and executed it automatically."
-        ),
-    })
-    if effective_template != template:
-        response["requested_template"] = template
-        response["effective_template"] = effective_template
-    elif isinstance(planning.get("planner"), dict) and planning["planner"].get("query_family"):
-        response["effective_template"] = effective_template
-    if isinstance(planning.get("planner"), dict) and planning["planner"].get("query_family"):
-        response["query_family"] = planning["planner"].get("query_family")
-    if include_planner_debug:
-        response["planner_summary"] = summarize_planner_result(planning.get("planner"))
-        response["planner_attempts"] = attempts
-        response["execution_variant"] = chosen_candidate.get("variant") if isinstance(chosen_candidate, dict) else None
-    return response
 
 
 def execute_question_batch_run(
@@ -7172,118 +5803,25 @@ def execute_question_batch_run(
     state_file: Path,
     include_planner_debug: bool = False,
 ) -> Dict[str, Any]:
-    """Execute a multi-question utterance via an Execution DAG."""
-    planning = build_question_batch_run_response(base_url, question, template, state_file)
-    schema = request_json("GET", f"{base_url}/schema")
-    write_schema_state(state_file, base_url)
-    unit_results = []
-    response_by_unit_id: Dict[str, Dict[str, Any]] = {}
-    conversation_states = []
-    inherited_context = None
-
-    for unit in planning.get("question_units", []):
-        if not isinstance(unit, dict):
-            continue
-        unit_id = unit.get("unit_id")
-        dependency = unit.get("dependency")
-        should_execute = True
-        blocked_reason = None
-        if isinstance(dependency, dict) and dependency.get("depends_on"):
-            dependency_response = response_by_unit_id.get(dependency["depends_on"])
-            if not evaluate_dependency_condition(dependency.get("condition"), dependency_response):
-                should_execute = False
-                blocked_reason = {
-                    "depends_on": dependency.get("depends_on"),
-                    "condition": dependency.get("condition"),
-                    "reason": "dependency_condition_not_met",
-                }
-
-        slots = extract_question_slots(
-            unit.get("text") or "",
-            template,
-            inherited_context=inherited_context,
-            question_unit=unit,
-        )
-        resolved_reference = resolve_reference_context(unit, conversation_states)
-        slots = apply_resolved_reference_to_slots(slots, resolved_reference)
-        intent_ir = build_question_unit_intent_ir(unit, slots, template, resolved_reference=resolved_reference)
-        planned_response = _build_single_question_mode_run_response(
-            base_url,
-            unit.get("text") or "",
-            template,
-            state_file,
-            schema=schema,
-            slots_override=slots,
-            unit_intent_ir=intent_ir,
-        )
-
-        if not should_execute:
-            response = {
-                "mode": "question-template",
-                "status": "skipped",
-                "question": unit.get("text"),
-                "template": planned_response.get("effective_template") or planned_response.get("template") or template,
-                "effective_template": planned_response.get("effective_template") or planned_response.get("template") or template,
-                "query_family": planned_response.get("query_family"),
-                "blocked_reason": blocked_reason,
-                "message": "Execution DAG skipped this unit because its dependency condition was not met.",
-            }
-        elif not planned_response.get("plan_executable"):
-            response = dict(planned_response)
-            response["message"] = (
-                "QUESTION + --template decomposed the utterance, but this unit could not produce a high-confidence executable plan."
-            )
-            response = apply_fail_closed_contract_to_question_response(response)
-        else:
-            response = _execute_single_question_mode_run(
-                base_url,
-                unit.get("text"),
-                template,
-                state_file,
-                include_planner_debug=include_planner_debug,
-                planning_override=planned_response,
-            )
-
-        unit_entry = dict(unit)
-        unit_entry["resolved_slots"] = slots
-        unit_entry["intent_ir"] = intent_ir
-        unit_entry["response"] = response
-        unit_results.append(unit_entry)
-        if isinstance(unit_id, str):
-            response_by_unit_id[unit_id] = response
-        inherited_context = build_conversation_state_entry(
-            {
-                "unit_id": unit_id,
-                "text": unit.get("text"),
-            },
-            slots,
-            intent_ir,
-            response,
-        )
-        conversation_states.append(inherited_context)
-
-    batch_response = {
-        "mode": "question-batch-template",
-        "status": compute_batch_execution_status(unit_results),
-        "question": question,
-        "template": template,
-        "question_units": unit_results,
-        "execution_dag": planning.get("execution_dag"),
-        "conversation_state": {
-            "last_unit_id": conversation_states[-1]["unit_id"] if conversation_states else None,
-            "units": conversation_states,
-        },
-        "presentation": build_question_batch_presentation(question, unit_results),
-        "schema_summary": planning.get("schema_summary"),
-        "schema_included": False,
-        "message": (
-            "QUESTION + --template decomposed the utterance, executed the unit DAG, "
-            "and produced a structured multi-answer result."
-        ),
-    }
-    if batch_response["status"] == "planning_required":
-        batch_response = apply_fail_closed_contract_to_batch_response(batch_response)
-    return batch_response
+    """Execute a multi-question utterance through the repo-owned runtime layer."""
+    return runtime_execute_question_batch_run(
+        base_url,
+        question,
+        template,
+        state_file,
+        include_planner_debug=include_planner_debug,
+        request_schema=lambda request_base_url: request_json("GET", f"{request_base_url}/schema"),
+        write_schema_state=write_schema_state,
+        merge_inherited_slots=merge_inherited_slots,
+        resolve_reference_context=resolve_reference_context,
+        apply_resolved_reference_to_slots=apply_resolved_reference_to_slots,
+        build_question_unit_intent_ir=build_question_unit_intent_ir,
+        build_single_question_mode_run_response=_build_single_question_mode_run_response,
+        execute_single_question_mode_run=_execute_single_question_mode_run,
+        build_conversation_state_entry=build_conversation_state_entry,
+        sparql_row_count=sparql_row_count,
+        summarize_schema=summarize_schema,
+    )
 
 
 def execute_question_mode_run(
@@ -7293,34 +5831,24 @@ def execute_question_mode_run(
     state_file: Path,
     include_planner_debug: bool = False,
 ) -> Dict[str, Any]:
-    """Plan and execute QUESTION + TEMPLATE shorthand with a locked planner-selected plan."""
-    question_units = decompose_utterance_to_question_units(question)
-    if len(question_units) > 1:
-        return execute_question_batch_run(
-            base_url,
-            question,
-            template,
-            state_file,
-            include_planner_debug=include_planner_debug,
-        )
-    single_unit = question_units[0] if question_units else {"unit_id": "q1", "text": question, "reference_markers": []}
-    slots = extract_question_slots(question, template, question_unit=single_unit)
-    intent_ir = build_question_unit_intent_ir(single_unit, slots, template)
-    planning = _build_single_question_mode_run_response(
-        base_url,
-        question,
-        template,
-        state_file,
-        slots_override=slots,
-        unit_intent_ir=intent_ir,
-    )
-    return _execute_single_question_mode_run(
+    """Plan and execute question-mode through the repo-owned runtime layer."""
+    return runtime_execute_question_mode_run(
         base_url,
         question,
         template,
         state_file,
         include_planner_debug=include_planner_debug,
-        planning_override=planning,
+        request_schema=lambda request_base_url: request_json("GET", f"{request_base_url}/schema"),
+        write_schema_state=write_schema_state,
+        merge_inherited_slots=merge_inherited_slots,
+        resolve_reference_context=resolve_reference_context,
+        apply_resolved_reference_to_slots=apply_resolved_reference_to_slots,
+        build_question_unit_intent_ir=build_question_unit_intent_ir,
+        build_single_question_mode_run_response=_build_single_question_mode_run_response,
+        execute_single_question_mode_run=_execute_single_question_mode_run,
+        build_conversation_state_entry=build_conversation_state_entry,
+        sparql_row_count=sparql_row_count,
+        summarize_schema=summarize_schema,
     )
 
 
@@ -7329,240 +5857,26 @@ def execute_run_plan(
     plan: Dict[str, Any],
     state_file: Path,
 ) -> Dict[str, Any]:
-    """Execute a guarded multi-step workflow with schema fetched first."""
-    plan = normalize_run_plan(plan)
-    if not any(key in plan for key in ("samples", "sparql", "analysis")):
-        raise SystemExit("run requires at least one of: samples, sparql, analysis")
-
-    def run_plan(request_fn):
-        schema = request_fn("GET", f"{base_url}/schema")
-        write_schema_state(state_file, base_url)
-
-        analysis_spec = plan.get("analysis")
-        include_profiles = bool(plan.get("include_profiles"))
-        profiles = request_fn("GET", f"{base_url}/analysis/profiles") if include_profiles else None
-
-        samples = []
-        for sample_spec in plan.get("samples", []):
-            class_name = sample_spec.get("class_name")
-            if not class_name:
-                raise SystemExit("Each sample spec requires class_name")
-            limit = int(sample_spec.get("limit", 3))
-            query = urllib.parse.urlencode({"limit": limit})
-            url = f"{base_url}/sample/{urllib.parse.quote(class_name)}?{query}"
-            samples.append({
-                "class_name": class_name,
-                "limit": limit,
-                "response": request_fn("GET", url),
-            })
-
-        sparql_response = None
-        sparql_meta = None
-        sparql_spec = plan.get("sparql")
-        if sparql_spec is not None:
-            prepared = prepare_sparql_spec(schema, sparql_spec, plan["template"])
-            query_text = prepared["query"]
-            sparql_meta = prepared.get("builder_meta")
-            sparql_response = request_fn("POST", f"{base_url}/sparql", {"query": query_text})
-
-        analysis_response = None
-        analysis_meta = None
-        analysis_error = None
-        analysis_skipped = None
-        if analysis_spec is not None:
-            kind = analysis_spec.get("kind", "paths")
-            row_count = sparql_row_count(sparql_response)
-
-            if plan["template"] in ("causal_lookup", "causal_enumeration") and sparql_spec is not None and row_count == 0:
-                analysis_skipped = {
-                    "reason": "sparql_no_results",
-                    "message": "Main SPARQL returned no rows, so analyzer was not executed.",
-                }
-            elif kind == "causal":
-                customer_id = analysis_spec.get("customer_id")
-                if not customer_id:
-                    raise SystemExit("analysis kind 'causal' requires customer_id")
-                analysis_response = request_fn(
-                    "GET",
-                    f"{base_url}/causal/{urllib.parse.quote(customer_id)}",
-                )
-            else:
-                payload = analysis_spec.get("payload")
-                if payload is None:
-                    payload = {k: v for k, v in analysis_spec.items() if k != "kind"}
-                payload = dict(payload)
-
-                preferred_source_var = analysis_spec.get("source_var")
-                if not preferred_source_var and sparql_spec is not None:
-                    preferred_source_var = sparql_spec.get("source_var")
-                if not preferred_source_var and sparql_meta is not None:
-                    preferred_source_var = prepared.get("source_var")
-
-                if kind == "paths-batch" and not payload.get("sources"):
-                    derived = derive_uri_sources_from_sparql(
-                        sparql_response,
-                        preferred_var=preferred_source_var,
-                        multiple=True,
-                    )
-                    if derived["values"]:
-                        payload["sources"] = derived["values"]
-                        analysis_meta = {
-                            "auto_derived_source_var": derived["source_var"],
-                            "auto_derived_source_count": len(derived["values"]),
-                        }
-                elif kind == "paths" and not payload.get("source"):
-                    derived = derive_uri_sources_from_sparql(
-                        sparql_response,
-                        preferred_var=preferred_source_var,
-                        multiple=False,
-                    )
-                    if derived["values"]:
-                        payload["source"] = derived["values"][0]
-                        analysis_meta = {
-                            "auto_derived_source_var": derived["source_var"],
-                            "auto_derived_source_count": 1,
-                        }
-
-                if kind == "paths-batch" and not payload.get("sources"):
-                    analysis_error = {
-                        "kind": "missing_sources",
-                        "message": (
-                            "paths-batch analysis requires analysis.payload.sources, "
-                            "or a SPARQL result column containing URI anchors that the client can auto-derive."
-                        ),
-                        "hint": (
-                            "Return at least one entity URI column from the main SPARQL, "
-                            "for example ?source or ?entity, or set sparql.source_var / analysis.payload.sources explicitly."
-                        ),
-                    }
-                elif kind == "paths" and not payload.get("source"):
-                    analysis_error = {
-                        "kind": "missing_source",
-                        "message": (
-                            "paths analysis requires analysis.payload.source, "
-                            "or a SPARQL result column containing a URI anchor that the client can auto-derive."
-                        ),
-                        "hint": (
-                            "Return at least one entity URI column from the main SPARQL, "
-                            "for example ?source or ?entity, or set sparql.source_var / analysis.payload.source explicitly."
-                        ),
-                    }
-                else:
-                    if kind in ("paths", "paths-batch") and "mode" not in payload:
-                        payload["mode"] = "paths"
-                    endpoint_map = {
-                        "paths": "/analysis/paths",
-                        "paths-batch": "/analysis/paths/batch",
-                        "neighborhood": "/analysis/neighborhood",
-                        "inferred-relations": "/analysis/inferred-relations",
-                        "explain": "/analysis/explain",
-                    }
-                    endpoint = endpoint_map.get(kind)
-                    if endpoint is None:
-                        raise SystemExit(f"Unsupported analysis kind: {kind}")
-                    analysis_response = request_fn("POST", f"{base_url}{endpoint}", payload)
-
-        response = {
-            "template": plan["template"],
-            "sparql": sparql_response,
-            "sparql_meta": sparql_meta,
-            "analysis_meta": analysis_meta,
-        }
-        if samples:
-            response["samples"] = samples
-        if analysis_error is not None:
-            response["status"] = "partial_success"
-            response["analysis_error"] = analysis_error
-        elif analysis_skipped is not None:
-            response["status"] = "empty_result"
-            response["analysis_skipped"] = analysis_skipped
-        else:
-            response["status"] = "ok"
-
-        if response["status"] == "empty_result" and isinstance(sparql_meta, dict):
-            recovery_hint = {
-                "strategy": "targeted_grounding_rerun",
-                "max_samples": 1,
-                "rerun_required": True,
-            }
-            if sparql_meta.get("mode") == "builder":
-                recovery_hint["preferred_classes"] = [
-                    value
-                    for value in [sparql_meta.get("evidence_class"), sparql_meta.get("source_class")]
-                    if isinstance(value, str) and value
-                ]
-            response["recovery_hint"] = recovery_hint
-
-        if plan.get("include_schema"):
-            response["schema"] = schema
-            response["schema_included"] = True
-        else:
-            response["schema_summary"] = summarize_schema(schema)
-            response["schema_included"] = False
-
-        if profiles is not None:
-            if plan.get("include_profiles"):
-                response["profiles"] = profiles
-                response["profiles_included"] = True
-            else:
-                response["profiles_summary"] = summarize_profiles(profiles)
-                response["profiles_included"] = False
-
-        presentation = build_run_presentation(
-            plan,
-            schema,
-            sparql_response,
-            analysis_response,
-            analysis_meta,
-            response["status"],
-            analysis_error,
-            analysis_skipped,
-        )
-        if presentation is not None:
-            response["presentation"] = presentation
-
-        if analysis_response is not None:
-            if plan.get("include_analysis"):
-                response["analysis"] = analysis_response
-                response["analysis_included"] = True
-            else:
-                response["analysis"] = summarize_analysis_response(analysis_response)
-                response["analysis_included"] = False
-
-        return response
-
-    try:
-        return run_plan(http_request_json)
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
-        try:
-            return run_plan(curl_request_json)
-        except RuntimeError as curl_exc:
-            print(f"Run plan failed with HTTP {exc.code}; curl fallback failed: {curl_exc}", file=sys.stderr)
-            if error_body:
-                print(error_body, file=sys.stderr)
-            raise SystemExit(1) from exc
-        except SystemExit as curl_exit:
-            if error_body:
-                print(error_body, file=sys.stderr)
-            if curl_exit.code in (502, 503, 504):
-                raise SystemExit(1) from exc
-            raise
-    except urllib.error.URLError as exc:
-        reason = str(exc.reason)
-        try:
-            return run_plan(curl_request_json)
-        except RuntimeError as curl_exc:
-            if "Operation not permitted" not in reason:
-                print(f"Request failed: {exc}; curl fallback failed: {curl_exc}", file=sys.stderr)
-                raise SystemExit(1) from exc
-            with local_test_client() as client:
-                return run_plan(lambda method, url, payload=None: client_request_json(client, method, url, payload))
-        except SystemExit as curl_exit:
-            if curl_exit.code in (502, 503, 504):
-                print(f"Run plan curl fallback returned HTTP {curl_exit.code}", file=sys.stderr)
-                raise SystemExit(1) from exc
-            raise
+    """Execute a guarded run plan through the repo-owned runtime layer."""
+    return runtime_execute_run_plan(
+        base_url,
+        plan,
+        state_file,
+        normalize_run_plan=normalize_run_plan,
+        http_request_json=http_request_json,
+        curl_request_json=curl_request_json,
+        client_request_json=client_request_json,
+        local_test_client_factory=local_test_client,
+        write_schema_state=write_schema_state,
+        prepare_sparql_spec=prepare_sparql_spec,
+        sparql_row_count=sparql_row_count,
+        derive_uri_sources_from_sparql=derive_uri_sources_from_sparql,
+        build_related_terminal_detail_index=build_related_terminal_detail_index,
+        build_run_presentation=build_run_presentation,
+        summarize_analysis_response=summarize_analysis_response,
+        summarize_schema=summarize_schema,
+        summarize_profiles=summarize_profiles,
+    )
 
 
 def main() -> None:
@@ -7618,6 +5932,11 @@ def main() -> None:
     run_parser.add_argument("question", nargs="?", help="Optional natural-language question for shorthand question mode.")
     run_parser.add_argument("--template", choices=sorted(RUN_TEMPLATES), help="Template to use with QUESTION shorthand.")
     run_parser.add_argument(
+        "--answer-only",
+        action="store_true",
+        help="Return a compact answer-facing payload without parser/grounding/planner debug bulk.",
+    )
+    run_parser.add_argument(
         "--plan-only",
         action="store_true",
         help="Return the semantic planner bundle without executing the selected plan.",
@@ -7633,132 +5952,25 @@ def main() -> None:
     base_url = args.base_url.rstrip("/")
     state_file = Path(args.state_file)
     ttl_seconds = args.schema_ttl_seconds
-
-    if args.command == "health":
-        print_output(request_json("GET", f"{base_url}/health"))
-        return
-
-    if args.command == "schema":
-        schema = request_json("GET", f"{base_url}/schema")
-        if args.full:
-            print_output(schema)
-        else:
-            print_output({
-                "schema_summary": summarize_schema(schema),
-                "schema_included": False,
-            })
-        write_schema_state(state_file, base_url)
-        return
-
-    if args.command == "profiles":
-        print_output(request_json("GET", f"{base_url}/analysis/profiles"))
-        return
-
-    if args.command == "templates":
-        print_output({"templates": RUN_TEMPLATES})
-        return
-
-    if args.command == "reload":
-        clear_schema_state(state_file)
-        print_output(request_json("POST", f"{base_url}/reload"))
-        return
-
-    if args.command == "sample":
-        require_schema_state(state_file, base_url, ttl_seconds, "sample")
-        print("Protocol note: /sample is for grounding only, not for enumerating final answer sets.", file=sys.stderr)
-        limit = args.limit_arg if args.limit_arg is not None else args.limit
-        query = urllib.parse.urlencode({"limit": limit})
-        url = f"{base_url}/sample/{urllib.parse.quote(args.class_name)}?{query}"
-        print_output(request_json("GET", url))
-        return
-
-    if args.command == "causal":
-        require_schema_state(state_file, base_url, ttl_seconds, "causal")
-        url = f"{base_url}/causal/{urllib.parse.quote(args.customer_id)}"
-        print_output(request_json("GET", url))
-        return
-
-    if args.command == "sparql":
-        require_schema_state(state_file, base_url, ttl_seconds, "sparql")
-        if args.query_file:
-            query_text = Path(args.query_file).read_text(encoding="utf-8")
-        elif args.query:
-            query_text = args.query
-        else:
-            query_text = args.query_arg
-        if not query_text:
-            raise SystemExit("sparql requires --query, --query-file, or a positional query string.")
-        print_output(request_json("POST", f"{base_url}/sparql", {"query": query_text}))
-        return
-
-    if args.command == "run":
-        json_supplied = args.json not in (None, "__AUTO__")
-        if (json_supplied or args.json_file) and args.question:
-            raise SystemExit("Use either run --json/--json-file or run QUESTION --template, not both.")
-        plan = load_json_payload(args.json, args.json_file)
-        if is_question_routed_plan(plan):
-            template = plan.get("template") or "custom"
-            ignored_fields = [
-                key for key in ("samples", "sparql", "analysis")
-                if key in plan
-            ]
-            include_planner_debug = bool(plan.get("include_planner_debug"))
-            json_plan_only = bool(plan.get("plan_only"))
-            if args.plan_only or json_plan_only:
-                response = build_question_mode_run_response(base_url, plan["question"], template, state_file)
-            else:
-                response = execute_question_mode_run(
-                    base_url,
-                    plan["question"],
-                    template,
-                    state_file,
-                    include_planner_debug=include_planner_debug,
-                )
-            if ignored_fields:
-                response = dict(response)
-                response["question_mode_override_applied"] = True
-                response["ignored_manual_fields"] = ignored_fields
-                response["message"] = (
-                    f"{response.get('message', '')} Manual fields {ignored_fields} were ignored because "
-                    "a standard template with natural-language question must use locked question-mode execution."
-                ).strip()
-            print_output(response)
-            return
-        if is_question_shorthand_plan(plan):
-            template = plan.get("template") or "custom"
-            json_plan_only = bool(plan.get("plan_only"))
-            if args.plan_only or json_plan_only:
-                print_output(build_question_mode_run_response(base_url, plan["question"], template, state_file))
-            else:
-                print_output(execute_question_mode_run(base_url, plan["question"], template, state_file))
-            return
-        if plan is None and args.question:
-            template = args.template or "custom"
-            if args.plan_only:
-                print_output(build_question_mode_run_response(base_url, args.question, template, state_file))
-            else:
-                print_output(execute_question_mode_run(base_url, args.question, template, state_file))
-            return
-        if plan is None:
-            raise SystemExit("run requires --json/--json-file, or QUESTION with --template.")
-        print_output(execute_run_plan(base_url, plan, state_file))
-        return
-
-    require_schema_state(state_file, base_url, ttl_seconds, args.command)
-    payload = load_json_payload(args.json, args.json_file)
-    if args.command == "analysis-paths" and isinstance(payload, dict) and payload.get("sources") and not payload.get("source"):
-        args.command = "analysis-paths-batch"
-    elif args.command == "analysis-paths-batch" and isinstance(payload, dict) and payload.get("source") and not payload.get("sources"):
-        payload = dict(payload)
-        payload["sources"] = [payload.pop("source")]
-    endpoint_map = {
-        "analysis-paths": "/analysis/paths",
-        "analysis-paths-batch": "/analysis/paths/batch",
-        "analysis-neighborhood": "/analysis/neighborhood",
-        "analysis-inferred-relations": "/analysis/inferred-relations",
-        "analysis-explain": "/analysis/explain",
-    }
-    print_output(request_json("POST", f"{base_url}{endpoint_map[args.command]}", payload))
+    print_output(dispatch_cli_command(
+        args,
+        base_url,
+        state_file,
+        ttl_seconds,
+        request_json=request_json,
+        summarize_schema=summarize_schema,
+        write_schema_state=write_schema_state,
+        clear_schema_state=clear_schema_state,
+        require_schema_state=require_schema_state,
+        emit_protocol_note=lambda message: print(message, file=sys.stderr),
+        run_templates=RUN_TEMPLATES,
+        load_json_payload=load_json_payload,
+        is_question_routed_plan=is_question_routed_plan,
+        is_question_shorthand_plan=is_question_shorthand_plan,
+        build_question_mode_run_response=build_question_mode_run_response,
+        execute_question_mode_run=execute_question_mode_run,
+        execute_run_plan=execute_run_plan,
+    ))
 
 
 if __name__ == "__main__":

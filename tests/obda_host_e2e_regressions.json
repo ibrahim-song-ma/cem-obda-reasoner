@@ -1,0 +1,270 @@
+{
+  "suite_name": "obda_host_e2e_regressions",
+  "suite_version": 1,
+  "cases": [
+    {
+      "id": "anchored_numeric_status_solution_host_protocol",
+      "description": "真实 Claude Code 宿主在显式数值状态+方案 follow-up 问题上应选中 obda-query 并保持 bundled-client 协议，不偏航到源码调试或硬编码端口。",
+      "payload": {
+        "question": "13800138004是否存在满意度评分低于3的情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "kind": "require_skill",
+          "skill": "obda-query"
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "obda_api.sh run",
+            "obda_api.py run"
+          ]
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "--answer-only",
+            " --json"
+          ]
+        },
+        {
+          "kind": "forbid_tool_path_prefix",
+          "tool_names": ["Read", "Grep", "Glob"],
+          "prefix": "/Users/Song/code/cc/reasoner"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.sh schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.py schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "--plan-only"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "curl "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "127.0.0.1:8000"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "reasoning_server:app"
+        },
+        {
+          "kind": "max_bash_count",
+          "value": 1
+        },
+        {
+          "kind": "require_result_subtype",
+          "value": "success"
+        }
+      ]
+    },
+    {
+      "id": "abstract_status_fail_closed_host_protocol",
+      "description": "真实宿主在抽象状态问题上应保持 skill 协议，不因 schema/client 波动而升级成 repo 调试或 raw curl。",
+      "payload": {
+        "question": "13800138004是否存在低满意度情况？如果有，有什么解决方案？"
+      },
+      "assertions": [
+        {
+          "kind": "require_skill",
+          "skill": "obda-query"
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "obda_api.sh run",
+            "obda_api.py run"
+          ]
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "--answer-only",
+            " --json"
+          ]
+        },
+        {
+          "kind": "forbid_tool_path_prefix",
+          "tool_names": ["Read", "Grep", "Glob"],
+          "prefix": "/Users/Song/code/cc/reasoner"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.sh schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.py schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "--plan-only"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "curl "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "127.0.0.1:8000"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "reasoning_server:app"
+        },
+        {
+          "kind": "max_bash_count",
+          "value": 1
+        },
+        {
+          "kind": "require_result_subtype",
+          "value": "success"
+        }
+      ]
+    },
+    {
+      "id": "causal_enumeration_host_protocol",
+      "description": "真实宿主在 because-which causal enumeration 问题上应直接走 question-mode run，不再先单独 schema，也不手写 curl / paths / sample 链。",
+      "payload": {
+        "question": "因为网络问题，哪些客户投诉了？"
+      },
+      "assertions": [
+        {
+          "kind": "require_skill",
+          "skill": "obda-query"
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "obda_api.sh run",
+            "obda_api.py run"
+          ]
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "--answer-only",
+            " --json"
+          ]
+        },
+        {
+          "kind": "forbid_tool_path_prefix",
+          "tool_names": ["Read", "Grep", "Glob"],
+          "prefix": "/Users/Song/code/cc/reasoner"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.sh schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.py schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "--plan-only"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": " sample "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": " sparql "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "curl "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "127.0.0.1:8000"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "reasoning_server:app"
+        },
+        {
+          "kind": "max_bash_count",
+          "value": 1
+        },
+        {
+          "kind": "require_result_subtype",
+          "value": "success"
+        }
+      ]
+    },
+    {
+      "id": "planning_required_hard_stop_host_protocol",
+      "description": "真实宿主在 question-mode hard-stop 上必须只执行一次 run，并把 planning_required 原样汇报给用户，不能继续 schema/sample/sparql 探测。",
+      "payload": {
+        "question": "有哪些客户因为5G信号差而投诉了?"
+      },
+      "assertions": [
+        {
+          "kind": "require_skill",
+          "skill": "obda-query"
+        },
+        {
+          "kind": "require_any_bash_contains",
+          "values": [
+            "obda_api.sh run",
+            "obda_api.py run"
+          ]
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.sh schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "obda_api.py schema"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "--plan-only"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": " sample "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": " sparql "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "schema --full"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "curl "
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "127.0.0.1:8000"
+        },
+        {
+          "kind": "forbid_bash_contains",
+          "value": "reasoning_server:app"
+        },
+        {
+          "kind": "max_bash_count",
+          "value": 1
+        },
+        {
+          "kind": "require_result_subtype",
+          "value": "success"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,206 @@
+{
+  "suite_name": "obda_grounding_regressions",
+  "suite_version": 3,
+  "cases": [
+    {
+      "id": "sample_anchor_exact_required",
+      "description": "sample-derived value node 作为 anchor 候选时应要求 exact literal match。",
+      "call": "sample_value_candidate_allowed",
+      "args": [
+        {
+          "slot_name": "anchor_text",
+          "text": "13800138004"
+        },
+        {
+          "catalog_source": "sample_value",
+          "label": "13800138004"
+        },
+        4.0,
+        0.1
+      ],
+      "assertions": [
+        {
+          "path": "",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "id": "sample_numeric_status_disallowed",
+      "description": "显式 numeric status binding 不应允许 sample-derived value node 参与主竞争。",
+      "call": "sample_value_candidate_allowed",
+      "args": [
+        {
+          "slot_name": "status_or_problem_text",
+          "text": "满意度评分",
+          "comparison": {
+            "op": "lt",
+            "value": 3
+          }
+        },
+        {
+          "catalog_source": "sample_value",
+          "label": "2.8"
+        },
+        14.0,
+        0.6
+      ],
+      "assertions": [
+        {
+          "path": "",
+          "equals": false
+        }
+      ]
+    },
+    {
+      "id": "sample_cause_overlap_allowed",
+      "description": "cause/target 场景下，规范化子串重叠应允许 sample-derived value node 参与 recall。",
+      "call": "sample_value_candidate_allowed",
+      "args": [
+        {
+          "slot_name": "cause_text",
+          "text": "网络问题"
+        },
+        {
+          "catalog_source": "sample_value",
+          "label": "网络"
+        },
+        5.0,
+        0.2
+      ],
+      "assertions": [
+        {
+          "path": "",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "id": "sample_cause_identifierish_overlap_allowed",
+      "description": "cause recall 对共享 identifier-like 片段的 sample value 应允许进入竞争，以覆盖 5G/型号/版本类口语约束。",
+      "call": "sample_value_candidate_allowed",
+      "args": [
+        {
+          "slot_name": "cause_text",
+          "text": "5G信号差"
+        },
+        {
+          "catalog_source": "sample_value",
+          "label": "5G信号不稳定"
+        },
+        13.0,
+        0.1515
+      ],
+      "assertions": [
+        {
+          "path": "",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "id": "sample_cause_surface_fragment_overlap_allowed",
+      "description": "cause recall 对共享短表面片段的 sample value 应允许进入竞争，以覆盖 信号差/信号弱 这类通用口语近似。",
+      "call": "sample_value_candidate_allowed",
+      "args": [
+        {
+          "slot_name": "cause_text",
+          "text": "信号差"
+        },
+        {
+          "catalog_source": "sample_value",
+          "label": "信号弱，通话中断"
+        },
+        1.0,
+        0.08
+      ],
+      "assertions": [
+        {
+          "path": "",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "id": "cause_slot_filters_key_like_attributes",
+      "description": "free-text cause slot 不应把 ...ID 这类低信息 key-like attribute 当成主 grounding 候选。",
+      "call": "manifest_nodes_for_slot",
+      "args": [
+        {
+          "attribute_nodes": [
+            {
+              "node_type": "attribute",
+              "label": "网络ID",
+              "local_name": "remediationstrategy_网络ID",
+              "range": "http://www.w3.org/2001/XMLSchema#string"
+            }
+          ],
+          "value_nodes": [
+            {
+              "node_type": "value",
+              "label": "网络覆盖问题",
+              "class_name": "event",
+              "local_name": "event_事件类型"
+            }
+          ]
+        },
+        {
+          "slot_name": "cause_text",
+          "allowed_node_types": [
+            "attribute",
+            "value"
+          ]
+        }
+      ],
+      "assertions": [
+        {
+          "path": "[0].label",
+          "equals": "网络覆盖问题"
+        }
+      ]
+    },
+    {
+      "id": "abstract_status_gating_filters_weak_candidate",
+      "description": "抽象 status 检查应过滤掉弱 grounding 候选。",
+      "call": "grounded_slot_candidates",
+      "args": [
+        [
+          {
+            "slot_name": "status_or_problem_text",
+            "candidates": [
+              {
+                "node_type": "value",
+                "numeric": false,
+                "lexical_score": 4.0,
+                "semantic_similarity": 0.2,
+                "total_score": 8.0,
+                "node_id": "weak"
+              },
+              {
+                "node_type": "value",
+                "numeric": false,
+                "lexical_score": 12.0,
+                "semantic_similarity": 0.35,
+                "total_score": 14.0,
+                "node_id": "strong"
+              }
+            ]
+          }
+        ],
+        "status_or_problem_text"
+      ],
+      "kwargs": {
+        "slot_input": {
+          "slot_name": "status_or_problem_text",
+          "constraint_mode": "status_check"
+        }
+      },
+      "assertions": [
+        {
+          "path": "[0].node_id",
+          "equals": "strong"
+        }
+      ]
+    }
+  ]
+}
